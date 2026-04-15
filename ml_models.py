@@ -1,12 +1,13 @@
 """ML models for Markedsinnsikt AI.
 
 Capabilities:
-  1. predict_next_week            — linear regression baseline (spend & ROAS)
-  2. detect_anomalies_zscore      — z-score anomaly detection on ROAS
-  3. suggest_budget_reallocation  — ROI-based budget shift recommendations
-  4. predict_xgboost_with_intervals — XGBoost forecasting + 90% prediction interval
-  5. backtest_models              — walk-forward validation: Linear vs XGBoost
-  6. detect_anomalies_isolation_forest — multi-dimensional Isolation Forest
+  1. predict_next_week                  — linear regression baseline
+  2. detect_anomalies_zscore            — z-score anomaly detection on ROAS
+  3. suggest_budget_reallocation        — ROI-based budget shift recommendations
+  4. predict_xgboost_with_intervals     — XGBoost forecasting + 90% prediction interval
+  5. backtest_models                    — rolling/expanding walk-forward validation
+  6. detect_anomalies_isolation_forest  — multi-dimensional Isolation Forest
+  7. compute_business_impact            — cost-of-error and decision accuracy proxy
 """
 
 from __future__ import annotations
@@ -285,22 +286,26 @@ def predict_xgboost_with_intervals(
 
 
 # ---------------------------------------------------------------------------
-# 5. Backtesting: walk-forward validation (Linear vs XGBoost)
+# 5. Backtesting: rolling/expanding walk-forward validation
 # ---------------------------------------------------------------------------
 
 def backtest_models(
     df: pd.DataFrame,
     n_lags: int = 2,
+    window: int | None = None,
 ) -> list[dict]:
     """
     Walk-forward validation on weekly ROAS per channel.
 
-    For each position k (from n_lags+1 to T-1):
-      - Train both LinearRegression and XGBoost on weeks 1..k
-      - Predict week k+1
-      - Record actual vs predicted
+    window=None : expanding window — trains on all weeks 1..k (default)
+    window=N    : rolling window  — trains on only the last N weeks before k
 
-    Returns MAE, RMSE per channel plus per-step data for charting.
+    For each step k, trains both LinearRegression and XGBoost, predicts k+1,
+    and records actual vs predicted. Also computes error analysis:
+      - bias (mean signed error)
+      - direction accuracy (% of weeks where trend direction is correct)
+      - worst 3 prediction cases
+      - failure mode classification
     """
     from xgboost import XGBRegressor
 
@@ -325,7 +330,8 @@ def backtest_models(
         min_train = n_lags + 1
 
         for i in range(min_train, len(vals)):
-            train = vals[:i]
+            start = max(0, i - window) if window is not None else 0
+            train = vals[start:i]
             X_tr, y_tr = _lag_features(train, n_lags)
             if len(X_tr) < 2:
                 continue
@@ -336,11 +342,9 @@ def backtest_models(
             )
             next_feat_arr = np.array([next_feat], dtype=float)
 
-            # Linear Regression
             lr = LinearRegression().fit(X_tr, y_tr)
             lr_p = float(lr.predict(next_feat_arr)[0])
 
-            # XGBoost
             xgb = XGBRegressor(
                 n_estimators=100, max_depth=3, learning_rate=0.1,
                 verbosity=0, random_state=42,
@@ -356,38 +360,127 @@ def backtest_models(
         if not actuals:
             continue
 
-        act  = np.array(actuals)
-        lr_a = np.array(lr_preds)
+        act   = np.array(actuals)
+        lr_a  = np.array(lr_preds)
         xgb_a = np.array(xgb_preds)
 
-        lr_mae    = float(np.mean(np.abs(act - lr_a)))
-        xgb_mae   = float(np.mean(np.abs(act - xgb_a)))
-        lr_rmse   = float(np.sqrt(np.mean((act - lr_a) ** 2)))
-        xgb_rmse  = float(np.sqrt(np.mean((act - xgb_a) ** 2)))
-        winner    = "XGBoost" if xgb_mae < lr_mae else "Lineær regresjon"
-        imp_pct   = (lr_mae - xgb_mae) / lr_mae * 100 if lr_mae > 0 else 0.0
+        xgb_errors = act - xgb_a   # positive = underpredicted, negative = overpredicted
+        lr_errors  = act - lr_a
+
+        lr_mae   = float(np.mean(np.abs(lr_errors)))
+        xgb_mae  = float(np.mean(np.abs(xgb_errors)))
+        lr_rmse  = float(np.sqrt(np.mean(lr_errors ** 2)))
+        xgb_rmse = float(np.sqrt(np.mean(xgb_errors ** 2)))
+        winner   = "XGBoost" if xgb_mae < lr_mae else "Lineær regresjon"
+        imp_pct  = (lr_mae - xgb_mae) / lr_mae * 100 if lr_mae > 0 else 0.0
+
+        # Bias: mean signed error (positive = model underpredicts, negative = overpredicts)
+        xgb_bias = float(np.mean(xgb_errors))
+
+        # Direction accuracy: % of consecutive steps where trend direction is correct
+        if len(act) >= 2:
+            actual_dirs = np.sign(np.diff(act))
+            pred_dirs   = np.sign(np.diff(xgb_a))
+            direction_acc = float(np.mean(actual_dirs == pred_dirs)) * 100
+        else:
+            direction_acc = None
+
+        # Worst 3 prediction cases by absolute error
+        abs_err = np.abs(xgb_errors)
+        worst_idx = np.argsort(abs_err)[-3:][::-1]
+        worst_cases = [
+            {
+                "week":      int(pred_weeks[i]),
+                "actual":    round(float(act[i]), 2),
+                "predicted": round(float(xgb_a[i]), 2),
+                "error":     round(float(xgb_errors[i]), 2),
+                "abs_error": round(float(abs_err[i]), 2),
+            }
+            for i in worst_idx
+        ]
+
+        # Failure mode classification
+        if abs(xgb_bias) > 0.15:
+            failure_mode = (
+                f"Systematisk {'undervurdering' if xgb_bias > 0 else 'overvurdering'} "
+                f"({xgb_bias:+.2f}x gjennomsnittlig avvik)"
+            )
+        elif direction_acc is not None and direction_acc < 55:
+            failure_mode = (
+                f"Svak trendretning ({direction_acc:.0f}% korrekt) — "
+                "modellen treffer dårlig på opp/ned-bevegelser"
+            )
+        elif xgb_mae > 0.5:
+            failure_mode = (
+                f"Høy absolutt feil (MAE {xgb_mae:.3f}x) — "
+                "for lite treningsdata eller høy volatilitet"
+            )
+        else:
+            failure_mode = "Ingen systematisk svikt oppdaget"
 
         results.append({
-            "channel":      ch,
-            "lr_mae":       round(lr_mae,   3),
-            "xgb_mae":      round(xgb_mae,  3),
-            "lr_rmse":      round(lr_rmse,  3),
-            "xgb_rmse":     round(xgb_rmse, 3),
-            "winner":       winner,
-            "improvement_pct": round(imp_pct, 1),
-            "steps":        len(actuals),
+            "channel":          ch,
+            "lr_mae":           round(lr_mae,   3),
+            "xgb_mae":          round(xgb_mae,  3),
+            "lr_rmse":          round(lr_rmse,  3),
+            "xgb_rmse":         round(xgb_rmse, 3),
+            "winner":           winner,
+            "improvement_pct":  round(imp_pct, 1),
+            "steps":            len(actuals),
+            "avg_actual_roas":  round(float(np.mean(act)), 2),
+            "xgb_bias":         round(xgb_bias, 3),
+            "direction_accuracy": round(direction_acc, 1) if direction_acc is not None else None,
+            "worst_cases":      worst_cases,
+            "failure_mode":     failure_mode,
+            "validation_type":  "rolling" if window else "expanding",
             "backtest_data": [
                 {
-                    "week":    w,
-                    "actual":  round(float(a), 2),
-                    "lr":      round(float(l), 2),
-                    "xgb":     round(float(x), 2),
+                    "week":      w,
+                    "actual":    round(float(a), 2),
+                    "lr":        round(float(l), 2),
+                    "xgb":       round(float(x), 2),
+                    "xgb_error": round(float(e), 2),
                 }
-                for w, a, l, x in zip(pred_weeks, actuals, lr_preds, xgb_preds)
+                for w, a, l, x, e in zip(
+                    pred_weeks, actuals, lr_preds, xgb_preds, xgb_errors.tolist()
+                )
             ],
         })
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# 7. Business impact: cost-of-error and decision accuracy proxy
+# ---------------------------------------------------------------------------
+
+def compute_business_impact(
+    backtest_results: list[dict],
+    avg_weekly_spend: float,
+) -> list[dict]:
+    """
+    Translate ROAS prediction error into business terms.
+
+    A ROAS prediction error of `mae` applied to `avg_weekly_spend` gives an
+    estimate of how much revenue could be mis-allocated per week.
+
+    decision_accuracy_proxy = 1 - (mae / avg_actual_roas)
+    Represents how close the model is to a perfect decision (100% = no error).
+    """
+    impacts = []
+    for r in backtest_results:
+        mae      = r["xgb_mae"]
+        avg_roas = r.get("avg_actual_roas", 1.0) or 1.0
+        estimated_cost   = mae * avg_weekly_spend
+        decision_accuracy = max(0.0, min(1.0, 1.0 - (mae / avg_roas))) * 100
+        impacts.append({
+            "channel":                        r["channel"],
+            "mae":                            round(mae, 3),
+            "avg_actual_roas":                round(avg_roas, 2),
+            "estimated_weekly_cost_of_error": round(estimated_cost, 0),
+            "decision_accuracy_proxy":        round(decision_accuracy, 1),
+        })
+    return impacts
 
 
 # ---------------------------------------------------------------------------

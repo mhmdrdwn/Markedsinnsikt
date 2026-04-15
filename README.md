@@ -1,10 +1,15 @@
 # Markedsinnsikt AI
 
-Markedsinnsikt AI is a decision-support tool that transforms marketing performance data into actionable insights and recommendations across campaigns, channels, and clients.
+Markedsinnsikt AI is an ML-powered decision support tool that:
 
-The system combines structured data with AI reasoning and machine learning to help marketing teams move from reporting to action — surfacing what is happening, why it might be happening, and what to do about it.
-
-Built with Dash, XGBoost, and a multi-provider AI fallback chain (Groq → Gemini → Mistral).
+- **Forecasts performance** using XGBoost with 90% prediction intervals
+- **Detects anomalies** using Isolation Forest (multivariate) and z-score (statistical)
+- **Validates models** using rolling/expanding walk-forward backtesting
+- **Compares baselines** — XGBoost vs LinearRegression across every evaluation fold
+- **Analyses errors** — bias, direction accuracy, worst cases, failure mode classification
+- **Quantifies business impact** — translates MAE into estimated weekly cost of error
+- **Generates explainable insights** via LLM (Groq → Gemini → Mistral fallback)
+- **Evaluates model performance over time** — not just a single train/test split
 
 ## Features
 

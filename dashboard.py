@@ -22,6 +22,7 @@ from ml_models import (
     predict_xgboost_with_intervals,
     backtest_models,
     detect_anomalies_isolation_forest,
+    compute_business_impact,
 )
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -1038,6 +1039,7 @@ def render_ml_results(
     zscore_anomalies: list,
     if_anomalies: list,
     recommendations: list,
+    impacts: list | None = None,
 ) -> html.Div:
 
     # ── 1. XGBoost forecast cards ─────────────────────────────────────────
@@ -1126,10 +1128,6 @@ def render_ml_results(
                 html.Td(f"{r['xgb_mae']:.3f}"),
                 html.Td(f"{r['lr_rmse']:.3f}"),
                 html.Td(f"{r['xgb_rmse']:.3f}"),
-                html.Td(html.Span(
-                    r["winner"],
-                    className=f"badge bg-{'success' if 'XGBoost' in r['winner'] else 'secondary'}",
-                )),
                 html.Td(f"{r['improvement_pct']:+.1f}%"),
             ])
             for r in backtest
@@ -1139,7 +1137,7 @@ def render_ml_results(
                 html.Thead(html.Tr([
                     html.Th("Kanal"), html.Th("Lin. MAE"), html.Th("XGB MAE"),
                     html.Th("Lin. RMSE"), html.Th("XGB RMSE"),
-                    html.Th("Vinner"), html.Th("Forbedring"),
+                    html.Th("XGB forbedring vs lin."),
                 ])),
                 html.Tbody(bt_rows),
             ],
@@ -1233,6 +1231,114 @@ def render_ml_results(
             html.P("Ikke nok kanaldata for budsjettanbefalinger.", className="text-muted small"),
         ]
 
+    # ── 7. Error analysis ─────────────────────────────────────────────────
+    error_section: list = []
+    if backtest:
+        error_rows = []
+        worst_cases_all: list = []
+        for r in backtest:
+            bias = r.get("xgb_bias", 0)
+            dir_acc = r.get("direction_accuracy")
+            dir_str = f"{dir_acc:.0f}%" if dir_acc is not None else "–"
+            bias_color = "text-danger" if abs(bias) > 0.15 else "text-success"
+            error_rows.append(html.Tr([
+                html.Td(r["channel"]),
+                html.Td(f"{r['xgb_mae']:.3f}x"),
+                html.Td(html.Span(f"{bias:+.3f}x", className=bias_color)),
+                html.Td(dir_str),
+                html.Td(html.Small(r.get("failure_mode", "–"), className="text-muted")),
+            ]))
+            for wc in r.get("worst_cases", []):
+                worst_cases_all.append({**wc, "channel": r["channel"]})
+
+        worst_cases_all.sort(key=lambda x: x["abs_error"], reverse=True)
+
+        error_section = [
+            html.H6("🔎 Feilanalyse", className="fw-bold mt-3 mb-1"),
+            html.P(
+                "Bias = gjennomsnittlig retningsfeil (positiv = undervurdering, negativ = overvurdering). "
+                "Trendretning = andel uker der opp/ned-bevegelse er korrekt predikert.",
+                className="text-muted small mb-2",
+            ),
+            dbc.Table(
+                [
+                    html.Thead(html.Tr([
+                        html.Th("Kanal"), html.Th("MAE"), html.Th("Bias"),
+                        html.Th("Trendretning"), html.Th("Sviktmodus"),
+                    ])),
+                    html.Tbody(error_rows),
+                ],
+                bordered=True, hover=True, responsive=True, size="sm", className="mb-3",
+            ),
+            html.H6("⚠️ Verste prediksjoner (topp 5)", className="fw-bold mb-1"),
+            dbc.Table(
+                [
+                    html.Thead(html.Tr([
+                        html.Th("Kanal"), html.Th("Uke"),
+                        html.Th("Faktisk"), html.Th("Predikert"), html.Th("Feil"),
+                    ])),
+                    html.Tbody([
+                        html.Tr([
+                            html.Td(wc["channel"]),
+                            html.Td(str(wc["week"])),
+                            html.Td(f"{wc['actual']:.2f}x"),
+                            html.Td(f"{wc['predicted']:.2f}x"),
+                            html.Td(
+                                html.Span(
+                                    f"{wc['error']:+.2f}x",
+                                    className="text-danger" if abs(wc["error"]) > 0.2 else "text-warning",
+                                )
+                            ),
+                        ])
+                        for wc in worst_cases_all[:5]
+                    ]),
+                ],
+                bordered=True, hover=True, responsive=True, size="sm", className="mb-3",
+            ),
+        ]
+
+    # ── 8. Business impact ────────────────────────────────────────────────
+    if impacts:
+        impact_cards = [
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader(html.Strong(imp["channel"])),
+                    dbc.CardBody([
+                        html.P([
+                            html.Span("Beslutningsnøyaktighet: ", className="text-muted small"),
+                            html.Span(
+                                f"{imp['decision_accuracy_proxy']:.1f}%",
+                                className=(
+                                    "fw-bold text-success" if imp["decision_accuracy_proxy"] >= 80
+                                    else "fw-bold text-warning" if imp["decision_accuracy_proxy"] >= 60
+                                    else "fw-bold text-danger"
+                                ),
+                            ),
+                        ], className="mb-1"),
+                        html.P([
+                            html.Span("Estimert ukentlig feilkostnad: ", className="text-muted small"),
+                            html.Span(f"NOK {imp['estimated_weekly_cost_of_error']:,.0f}", className="fw-bold"),
+                        ], className="mb-0"),
+                        html.Small(f"Gj.snitt ROAS: {imp['avg_actual_roas']:.2f}x · MAE: {imp['mae']:.3f}x",
+                                   className="text-muted"),
+                    ]),
+                ], className="shadow-sm h-100"),
+                md=4, className="mb-3",
+            )
+            for imp in impacts
+        ]
+        impact_section: list = [
+            html.H6("💼 Forretningsmessig konsekvens av prediksjonfeil", className="fw-bold mt-3 mb-1"),
+            html.P(
+                "Estimert ukentlig inntektstap ved å handle på feil ROAS-prediksjon. "
+                "Beslutningsnøyaktighet = 1 − (MAE / gj.snitt ROAS).",
+                className="text-muted small mb-2",
+            ),
+            dbc.Row(impact_cards),
+        ]
+    else:
+        impact_section = []
+
     return html.Div([
         section_header("🔮", "XGBoost-prediksjon neste uke"),
         dbc.Row(xgb_cards),
@@ -1241,6 +1347,12 @@ def render_ml_results(
 
         html.Hr(),
         *backtest_section,
+
+        html.Hr(),
+        *error_section,
+
+        html.Hr(),
+        *impact_section,
 
         html.Hr(),
         *anomaly_section,
@@ -1291,15 +1403,12 @@ def _make_backtest_fig(r: dict) -> go.Figure:
 @app.callback(
     Output("ml-out", "children"),
     Output("ml-last-filters", "data"),
-    Input("main-tabs", "active_tab"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
     State("ml-last-filters", "data"),
 )
-def run_ml_analysis(active_tab, client, campaign, channel, last_filters):
-    if active_tab != "tab-ml":
-        return dash.no_update, dash.no_update
+def run_ml_analysis(client, campaign, channel, last_filters):
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
         return dash.no_update, dash.no_update
@@ -1310,7 +1419,9 @@ def run_ml_analysis(active_tab, client, campaign, channel, last_filters):
         z_anomalies  = detect_anomalies_zscore(df)
         if_anomalies = detect_anomalies_isolation_forest(df)
         recs         = suggest_budget_reallocation(df)
-        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs), current
+        avg_spend    = float(df.groupby("week")["spend"].sum().mean())
+        impacts      = compute_business_impact(bt, avg_spend)
+        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs, impacts), current
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger"), current
 
@@ -1332,15 +1443,12 @@ def update_chart_insights(client, campaign, channel):
 @app.callback(
     Output("live-insights-panel", "children"),
     Output("insights-last-filters", "data"),
-    Input("main-tabs", "active_tab"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
     State("insights-last-filters", "data"),
 )
-def update_live_insights(active_tab, client, campaign, channel, last_filters):
-    if active_tab != "tab-innsikt":
-        return dash.no_update, dash.no_update
+def update_live_insights(client, campaign, channel, last_filters):
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
         return dash.no_update, dash.no_update
