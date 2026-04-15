@@ -59,12 +59,9 @@ CHANNEL_COLORS = {
 # Data layer (direct calls — no HTTP)
 # ---------------------------------------------------------------------------
 
-_df: pd.DataFrame | None = None
+_df: pd.DataFrame = generate_dataset()  # pre-warm at startup — avoids cold-start race on Render
 
 def get_df() -> pd.DataFrame:
-    global _df
-    if _df is None:
-        _df = generate_dataset()
     return _df
 
 
@@ -246,6 +243,7 @@ app = dash.Dash(
         "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
     ],
     title="Markedsinnsikt AI",
+    suppress_callback_exceptions=True,
 )
 server = app.server
 
@@ -535,25 +533,6 @@ main = dbc.Col(
                     "Et beslutningsstøtteverktøy som omgjør markedsdata til handlingsrettede "
                     "anbefalinger på tvers av kampanjer, kanaler og kunder."
                 ),
-                html.Div(
-                    [
-                        html.Span("● Live",
-                                  style={"background": "rgba(16,185,129,0.18)",
-                                         "color": "#6ee7b7",
-                                         "padding": "0.2rem 0.65rem",
-                                         "borderRadius": "20px",
-                                         "fontSize": "0.72rem",
-                                         "fontWeight": "600",
-                                         "marginRight": "0.5rem"}),
-                        html.Span("Groq · Gemini · Mistral",
-                                  style={"background": "rgba(255,255,255,0.08)",
-                                         "color": "rgba(255,255,255,0.5)",
-                                         "padding": "0.2rem 0.65rem",
-                                         "borderRadius": "20px",
-                                         "fontSize": "0.72rem"}),
-                    ],
-                    style={"marginTop": "0.8rem"},
-                ),
             ],
             className="page-header",
         ),
@@ -593,24 +572,7 @@ main = dbc.Col(
                     className="pt-4",
                 ),
 
-                # ── Tab 2: AI Innsikt ─────────────────────────
-                dbc.Tab(
-                    [
-                        html.P(
-                            "Drevet av Groq → Gemini → Mistral. Lastes automatisk når du åpner denne fanen.",
-                            className="text-muted small mt-4 mb-3",
-                        ),
-                        dcc.Loading(
-                            html.Div(id="live-insights-panel"),
-                            type="circle",
-                        ),
-                    ],
-                    label="🧠 AI Innsikt",
-                    tab_id="tab-innsikt",
-                    className="pt-2",
-                ),
-
-                # ── Tab 3: ML-analyse ─────────────────────────
+                # ── Tab 2: ML-analyse ─────────────────────────
                 dbc.Tab(
                     [
                         html.P(
@@ -624,6 +586,19 @@ main = dbc.Col(
                     tab_id="tab-ml",
                     className="pt-2",
                 ),
+
+                # ── Tab 3: AI Innsikt ─────────────────────────
+                dbc.Tab(
+                    [
+                        dcc.Loading(
+                            html.Div(id="live-insights-panel"),
+                            type="circle",
+                        ),
+                    ],
+                    label="🧠 AI Innsikt",
+                    tab_id="tab-innsikt",
+                    className="pt-2",
+                ),
             ],
             id="main-tabs",
             active_tab="tab-analyse",
@@ -632,7 +607,7 @@ main = dbc.Col(
 
         html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
         html.P(
-            "Markedsinnsikt AI — Bygget med Dash, XGBoost & Groq/Gemini/Mistral · Dataene er syntetiske og kun for demoformål.",
+            "Dataene er syntetiske og kun for demoformål.",
             className="text-muted text-center small mb-5",
         ),
     ],
@@ -865,41 +840,41 @@ def update_charts(client, campaign, channel):
     return fig_roas, fig_conv, fig_spend, fig_weekly
 
 
-def render_insights(data: dict) -> html.Div:
-    priority_color = {"high": "danger", "medium": "warning", "low": "success"}
+def render_insights(data: dict, ml_recs: list | None = None, impacts: list | None = None) -> html.Div:
+    unified = _render_unified_action_plan(data.get("recommendations", []), ml_recs or [], impacts or [])
 
-    anomaly_cards = []
-    for a in data.get("anomalies", []):
-        color = "danger" if a.get("severity") == "high" else "warning"
-        anomaly_cards.append(
-            dbc.Alert(
-                [html.Strong(f"[{a.get('severity','').upper()}] {a.get('campaign','')}: "), a.get("issue", "")],
-                color=color,
-                className="py-2 mb-2",
-            )
-        )
-
-    rec_cards = [
-        dbc.Col(
-            dbc.Card([
-                dbc.CardHeader(
-                    html.Span(
-                        r.get("priority", "").upper(),
-                        className=f"badge bg-{priority_color.get(r.get('priority',''), 'secondary')}",
-                    )
-                ),
-                dbc.CardBody([
-                    html.P(html.Strong(r.get("action", "")), className="mb-1"),
-                    html.Small(f"Mål: {r.get('target', '')}", className="text-muted d-block"),
-                    html.Small(f"Forventet effekt: {r.get('expected_impact', '')}", className="text-muted"),
-                ]),
-            ], className="h-100 shadow-sm"),
-            md=4, className="mb-3",
-        )
-        for r in data.get("recommendations", [])
-    ]
+    exec_decision = data.get("executive_decision", "")
+    exec_block = html.Div(
+        [
+            html.Div(
+                "Ukens beslutning",
+                style={
+                    "fontSize": "0.65rem", "fontWeight": "700", "letterSpacing": "0.1em",
+                    "textTransform": "uppercase", "color": "rgba(255,255,255,0.7)",
+                    "marginBottom": "0.4rem",
+                },
+            ),
+            html.Div(
+                exec_decision,
+                style={
+                    "fontSize": "1.15rem", "fontWeight": "700", "lineHeight": "1.4",
+                    "color": "white",
+                },
+            ),
+        ],
+        style={
+            "background": "linear-gradient(135deg, #1e3a5f 0%, #2c3e50 100%)",
+            "borderRadius": "12px",
+            "padding": "1.25rem 1.5rem",
+            "marginBottom": "1.25rem",
+            "borderLeft": "4px solid #3b82f6",
+            "boxShadow": "0 4px 16px rgba(0,0,0,0.12)",
+        },
+    ) if exec_decision else html.Div()
 
     return html.Div([
+        exec_block,
+
         dbc.Alert(data.get("summary", ""), color="info", className="mb-3"),
 
         html.H6("Nøkkelinnsikt", className="fw-bold"),
@@ -908,13 +883,88 @@ def render_insights(data: dict) -> html.Div:
             for i in data.get("insights", [])
         ], className="mb-3"),
 
-        *(
-            [html.H6("Avvik oppdaget", className="fw-bold text-danger"), *anomaly_cards]
-            if anomaly_cards else []
-        ),
+        unified,
+    ])
 
-        html.H6("Anbefalinger", className="fw-bold mt-2"),
-        dbc.Row(rec_cards),
+
+def _render_unified_action_plan(ai_recs: list, ml_recs: list, impacts: list) -> html.Div:
+    """Merge AI recommendations + ML budget signals into a single ranked action plan."""
+
+    rows = []
+
+    # AI recommendations → rank by priority
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    for r in sorted(ai_recs, key=lambda x: priority_rank.get(x.get("priority", "low"), 2)):
+        pri = r.get("priority", "low")
+        rows.append({
+            "rank":   priority_rank.get(pri, 2),
+            "source": "AI",
+            "badge":  pri.upper(),
+            "color":  {"high": "danger", "medium": "warning", "low": "success"}.get(pri, "secondary"),
+            "action": r.get("action", ""),
+            "detail": f"Mål: {r.get('target', '')} — {r.get('expected_impact', '')}",
+        })
+
+    # ML budget reallocation → always "medium" priority
+    for r in ml_recs:
+        rows.append({
+            "rank":   1,
+            "source": "ML",
+            "badge":  "BUDSJETT",
+            "color":  "info",
+            "action": f"Flytt budsjett: {r['from_channel']} → {r['to_channel']}",
+            "detail": f"{r['summary']}  (observert ROAS: {r['from_roas']:.1f}x → {r['to_roas']:.1f}x)",
+        })
+
+    # ML business impact → flag lowest-accuracy channel as high risk
+    if impacts:
+        worst = min(impacts, key=lambda x: x["decision_accuracy_proxy"])
+        if worst["decision_accuracy_proxy"] < 75:
+            rows.append({
+                "rank":   0,
+                "source": "ML",
+                "badge":  "RISIKO",
+                "color":  "danger",
+                "action": f"Forbedre prediksjonsnøyaktighet for {worst['channel']}",
+                "detail": (
+                    f"Beslutningsnøyaktighet ca. {round(worst['decision_accuracy_proxy'] / 5) * 5:.0f}% — "
+                    f"estimert størrelsesorden ~NOK {round(worst['estimated_weekly_cost_of_error'] / 500) * 500:,.0f}/uke i risiko."
+                ),
+            })
+
+    if not rows:
+        return html.Div()
+
+    rows.sort(key=lambda x: x["rank"])
+
+    table_rows = [
+        html.Tr([
+            html.Td(html.Span(r["badge"], className=f"badge bg-{r['color']}")),
+            html.Td(html.Span(r["source"], className="badge bg-secondary")),
+            html.Td(html.Strong(r["action"])),
+            html.Td(html.Small(r["detail"], className="text-muted")),
+        ])
+        for r in rows
+    ]
+
+    return html.Div([
+        html.H6("Samlet handlingsplan", className="fw-bold mt-2 mb-1"),
+        html.P(
+            "Prioriterte tiltak basert på AI-analyse og ML-modellsignaler.",
+            className="text-muted small mb-2",
+        ),
+        dbc.Table(
+            [
+                html.Thead(html.Tr([
+                    html.Th("Prioritet", style={"width": "9%"}),
+                    html.Th("Kilde",     style={"width": "7%"}),
+                    html.Th("Tiltak",    style={"width": "35%"}),
+                    html.Th("Detalj"),
+                ])),
+                html.Tbody(table_rows),
+            ],
+            bordered=True, hover=True, responsive=True, size="sm",
+        ),
     ])
 
 
@@ -1013,7 +1063,7 @@ def send_message(_, _submit, message, history, client, campaign, channel):
 def render_messages(history):
     if not history:
         return html.P(
-            "Ingen meldinger ennå. Still et spørsmål!",
+            "Ingen meldinger.",
             className="text-muted text-center",
             style={"marginTop": "2rem", "fontSize": "0.88rem"},
         )
@@ -1038,7 +1088,6 @@ def render_ml_results(
     backtest: list,
     zscore_anomalies: list,
     if_anomalies: list,
-    recommendations: list,
     impacts: list | None = None,
 ) -> html.Div:
 
@@ -1056,9 +1105,8 @@ def render_ml_results(
                     ], className="mb-1"),
                     html.P(
                         f"90% intervall: [{p['lower_90']:.2f}x – {p['upper_90']:.2f}x]",
-                        className="text-muted small mb-1",
+                        className="text-muted small mb-0",
                     ),
-                    html.Small(f"Trenings-MAE: ±{p['mae']:.3f}x", className="text-muted"),
                 ]),
             ], className="shadow-sm h-100"),
             md=4, className="mb-3",
@@ -1171,7 +1219,7 @@ def render_ml_results(
         ], active_tab=f"bt-{backtest[0]['channel'].replace(' ', '-')}")
 
         backtest_section = [
-            html.H6("📊 Backtesting — walk-forward validering", className="fw-bold mt-3 mb-1"),
+            html.H6("Backtesting — walk-forward validering", className="fw-bold mt-3 mb-1"),
             html.P(
                 "Trener på t=1..k, predikerer uke k+1 for hvert steg. "
                 "Sammenligner Lineær regresjon vs XGBoost.",
@@ -1207,7 +1255,7 @@ def render_ml_results(
 
     all_anomalies = zscore_anomalies[:6] + if_anomalies[:6]
     anomaly_section = [
-        html.H6("🔍 Avviksdeteksjon: Z-score + Isolation Forest",
+        html.H6("Avviksdeteksjon: Z-score + Isolation Forest",
                 className="fw-bold mt-3 mb-1"),
         html.P(
             f"Z-score flagget {len(zscore_anomalies)} avvik · "
@@ -1221,32 +1269,7 @@ def render_ml_results(
         [html.P("Ingen avvik oppdaget.", className="text-muted small")]
     )
 
-    # ── 6. Budget reallocation ────────────────────────────────────────────
-    if recommendations:
-        budget_section = [
-            html.H6("💡 Budsjettoptimalisering", className="fw-bold mt-3 mb-1"),
-            html.P(
-                "Estimert gevinst ved å flytte 20% av budsjett fra lavere- til høyere-ytende kanal.",
-                className="text-muted small mb-2",
-            ),
-            *[
-                dbc.Alert([
-                    html.Strong(f"{r['from_channel']} → {r['to_channel']}:  "),
-                    r["summary"], html.Br(),
-                    html.Small(
-                        f"ROAS: {r['from_roas']:.2f}x → {r['to_roas']:.2f}x",
-                        className="text-muted",
-                    ),
-                ], color="success", className="py-2 mb-2")
-                for r in recommendations
-            ],
-        ]
-    else:
-        budget_section = [
-            html.P("Ikke nok kanaldata for budsjettanbefalinger.", className="text-muted small"),
-        ]
-
-    # ── 7. Error analysis ─────────────────────────────────────────────────
+    # ── 6. Error analysis ─────────────────────────────────────────────────
     error_section: list = []
     if backtest:
         error_rows = []
@@ -1258,7 +1281,6 @@ def render_ml_results(
             bias_color = "text-danger" if abs(bias) > 0.15 else "text-success"
             error_rows.append(html.Tr([
                 html.Td(r["channel"]),
-                html.Td(f"{r['xgb_mae']:.3f}x"),
                 html.Td(html.Span(f"{bias:+.3f}x", className=bias_color)),
                 html.Td(dir_str),
                 html.Td(html.Small(r.get("failure_mode", "–"), className="text-muted")),
@@ -1269,12 +1291,11 @@ def render_ml_results(
         worst_cases_all.sort(key=lambda x: x["abs_error"], reverse=True)
 
         error_section = [
-            html.H6("🔎 Feilanalyse", className="fw-bold mt-3 mb-1"),
+            html.H6("Feilanalyse", className="fw-bold mt-3 mb-1"),
             dbc.Table(
                 [
                     html.Thead(html.Tr([
                         html.Th("Kanal"),
-                        _th("MAE",          "tip-err-mae",   "Mean Absolute Error — gjennomsnittlig absolutt avvik mellom prediksjon og faktisk ROAS."),
                         _th("Bias",         "tip-err-bias",  "Gjennomsnittlig retningsfeil. Positiv = modellen undervurderer. Negativ = overvurderer."),
                         _th("Trendretning", "tip-err-dir",   "Andel uker der modellen korrekt predikerer om ROAS stiger eller faller."),
                         _th("Sviktmodus",   "tip-err-fail",  "Klassifisert feilmønster basert på bias og trendretning."),
@@ -1283,7 +1304,7 @@ def render_ml_results(
                 ],
                 bordered=True, hover=True, responsive=True, size="sm", className="mb-3",
             ),
-            html.H6("⚠️ Verste prediksjoner (topp 5)", className="fw-bold mb-1"),
+            html.H6("Verste prediksjoner (topp 5)", className="fw-bold mb-1"),
             dbc.Table(
                 [
                     html.Thead(html.Tr([
@@ -1329,7 +1350,7 @@ def render_ml_results(
                                 ),
                             ], className="text-muted small"),
                             html.Span(
-                                f"{imp['decision_accuracy_proxy']:.1f}%",
+                                f"ca. {round(imp['decision_accuracy_proxy'] / 5) * 5:.0f}%",
                                 className=(
                                     "fw-bold text-success" if imp["decision_accuracy_proxy"] >= 80
                                     else "fw-bold text-warning" if imp["decision_accuracy_proxy"] >= 60
@@ -1343,14 +1364,17 @@ def render_ml_results(
                                 html.Sup("ⓘ", id=f"tip-wc-{imp['channel'].replace(' ','-')}",
                                          style={"cursor": "help", "color": "#94a3b8", "fontSize": "0.65rem"}),
                                 dbc.Tooltip(
-                                    "MAE × gj.snitt ukentlig forbruk. Estimert inntekt i risiko ved å handle på feil ROAS-prediksjon.",
+                                    "Estimat: MAE × gj.snitt ukentlig forbruk. Indikerer størrelsesorden, ikke eksakt tap.",
                                     target=f"tip-wc-{imp['channel'].replace(' ','-')}",
                                     placement="top",
                                 ),
                             ], className="text-muted small"),
-                            html.Span(f"NOK {imp['estimated_weekly_cost_of_error']:,.0f}", className="fw-bold"),
+                            html.Span(
+                                f"~NOK {round(imp['estimated_weekly_cost_of_error'] / 500) * 500:,.0f}",
+                                className="fw-bold",
+                            ),
                         ], className="mb-0"),
-                        html.Small(f"Gj.snitt ROAS: {imp['avg_actual_roas']:.2f}x · MAE: {imp['mae']:.3f}x",
+                        html.Small(f"Gj.snitt ROAS: {imp['avg_actual_roas']:.1f}x",
                                    className="text-muted"),
                     ]),
                 ], className="shadow-sm h-100"),
@@ -1359,7 +1383,7 @@ def render_ml_results(
             for imp in impacts
         ]
         impact_section: list = [
-            html.H6("💼 Forretningsmessig konsekvens av prediksjonfeil", className="fw-bold mt-3 mb-1"),
+            html.H6("Forretningsmessig konsekvens av prediksjonfeil", className="fw-bold mt-3 mb-1"),
             html.P(
                 "Estimert ukentlig inntektstap ved å handle på feil ROAS-prediksjon. "
                 "Beslutningsnøyaktighet = 1 − (MAE / gj.snitt ROAS).",
@@ -1387,9 +1411,6 @@ def render_ml_results(
 
         html.Hr(),
         *anomaly_section,
-
-        html.Hr(),
-        *budget_section,
     ])
 
 
@@ -1452,7 +1473,7 @@ def run_ml_analysis(client, campaign, channel, last_filters):
         recs         = suggest_budget_reallocation(df)
         avg_spend    = float(df.groupby("week")["spend"].sum().mean())
         impacts      = compute_business_impact(bt, avg_spend)
-        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs, impacts), current
+        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts), current
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger"), current
 
@@ -1486,7 +1507,18 @@ def update_live_insights(client, campaign, channel, last_filters):
     try:
         context = build_context(get_df(), client, campaign, channel)
         data = generate_insights(context, model=DEFAULT_MODEL)
-        return render_insights(data), current
+
+        # ML signals for the unified action plan
+        try:
+            df = apply_filters(client, campaign, channel)
+            bt = backtest_models(df)
+            avg_spend = float(df.groupby("week")["spend"].sum().mean())
+            impacts   = compute_business_impact(bt, avg_spend)
+            ml_recs   = suggest_budget_reallocation(df)
+        except Exception:
+            impacts, ml_recs = [], []
+
+        return render_insights(data, ml_recs, impacts), current
     except Exception as e:
         return ai_error_alert(e), current
 
