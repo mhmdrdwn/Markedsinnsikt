@@ -282,7 +282,6 @@ def build_context(
     client_filter: Optional[str] = None,
     campaign_filter: Optional[str] = None,
     channel_filter: Optional[str] = None,
-    max_rows: int = 25,
 ) -> str:
     filtered = df.copy()
 
@@ -330,14 +329,15 @@ def build_context(
         )
     lines.append("")
 
-    # Campaign breakdown
-    lines.append("=== PERFORMANCE BY CAMPAIGN ===")
+    # Campaign breakdown (top 10 by spend to keep context size bounded)
+    lines.append("=== PERFORMANCE BY CAMPAIGN (top 10 by spend) ===")
     cp_group = (
         filtered.groupby(["client", "campaign"])
         .agg(spend=("spend", "sum"), revenue=("revenue", "sum"), conversions=("conversions", "sum"))
         .reset_index()
     )
     cp_group["roas"] = (cp_group["revenue"] / cp_group["spend"]).round(2)
+    cp_group = cp_group.nlargest(10, "spend")
     for _, row in cp_group.iterrows():
         lines.append(
             f"  [{row['client']}] {row['campaign']}: spend NOK {row['spend']:,.0f} | "
@@ -366,22 +366,13 @@ def build_context(
         lines.append(compute_benchmark_context(df, client_filter))
         lines.append("")
 
-    # Anomalies
+    # Anomalies (cap at 5 to avoid bloat)
     anomalies = detect_anomalies(filtered)
     if anomalies:
         lines.append("=== DETECTED ANOMALIES ===")
-        for a in anomalies:
+        for a in anomalies[:5]:
             lines.append(f"  [{a['severity'].upper()}] [{a['client']}] {a['campaign']}: {a['detail']}")
         lines.append("")
-
-    # Raw sample
-    sample = filtered.head(max_rows)
-    cols = [
-        "client", "campaign", "channel", "week", "spend", "impressions",
-        "clicks", "conversions", "revenue", "roas", "ctr", "goal", "audience",
-    ]
-    lines.append(f"=== RAW DATA SAMPLE (first {len(sample)} rows) ===")
-    lines.append(sample[cols].to_string(index=False))
 
     return "\n".join(lines)
 
@@ -473,7 +464,7 @@ def _groq_insights(context: str, model: str) -> dict:
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=1500,
+        max_tokens=2000,
     )
     return _safe_json(response.choices[0].message.content)
 
@@ -573,7 +564,7 @@ def _mistral_insights(context: str) -> dict:
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=1500,
+        max_tokens=2000,
     )
     return _safe_json(response.choices[0].message.content)
 

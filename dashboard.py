@@ -557,53 +557,77 @@ main = dbc.Col(
             className="page-header",
         ),
 
-        # ── Oversikt ──────────────────────────────────────────
-        section_header("📈", "Oversikt"),
-        dbc.Row(id="kpi-row", className="mb-4 g-3"),
+        dbc.Tabs(
+            [
+                # ── Tab 1: Analyse ────────────────────────────
+                dbc.Tab(
+                    [
+                        section_header("📈", "Oversikt"),
+                        dbc.Row(id="kpi-row", className="mb-4 g-3"),
 
-        # ── AI Innsikt (auto, fires on filter change) ─────────
-        section_header("🧠", "AI Innsikt"),
-        html.P(
-            "Drevet av Groq → Gemini → Mistral. Oppdateres automatisk når filtre endres.",
-            className="text-muted small mb-3",
+                        section_header("📊", "Ytelse"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(dcc.Graph(id="chart-roas"), className="chart-wrapper"),
+                                chart_insight_text("insight-roas"),
+                            ], md=6),
+                            dbc.Col([
+                                html.Div(dcc.Graph(id="chart-conv"), className="chart-wrapper"),
+                                chart_insight_text("insight-conv"),
+                            ], md=6),
+                        ], className="mb-1"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(dcc.Graph(id="chart-spend-pie"), className="chart-wrapper"),
+                                chart_insight_text("insight-spend"),
+                            ], md=6),
+                            dbc.Col([
+                                html.Div(dcc.Graph(id="chart-weekly"), className="chart-wrapper"),
+                                chart_insight_text("insight-weekly"),
+                            ], md=6),
+                        ], className="mb-3"),
+                    ],
+                    label="📊 Analyse",
+                    tab_id="tab-analyse",
+                    className="pt-4",
+                ),
+
+                # ── Tab 2: AI Innsikt ─────────────────────────
+                dbc.Tab(
+                    [
+                        html.P(
+                            "Drevet av Groq → Gemini → Mistral. Lastes automatisk når du åpner denne fanen.",
+                            className="text-muted small mt-4 mb-3",
+                        ),
+                        dcc.Loading(
+                            html.Div(id="live-insights-panel"),
+                            type="circle",
+                        ),
+                    ],
+                    label="🧠 AI Innsikt",
+                    tab_id="tab-innsikt",
+                    className="pt-2",
+                ),
+
+                # ── Tab 3: ML-analyse ─────────────────────────
+                dbc.Tab(
+                    [
+                        html.P(
+                            "XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
+                            "Walk-forward backtesting · Isolation Forest + z-score avviksdeteksjon.",
+                            className="text-muted small mt-4 mb-3",
+                        ),
+                        dcc.Loading(html.Div(id="ml-out"), type="circle"),
+                    ],
+                    label="🔮 ML-analyse",
+                    tab_id="tab-ml",
+                    className="pt-2",
+                ),
+            ],
+            id="main-tabs",
+            active_tab="tab-analyse",
+            className="mb-2",
         ),
-        dcc.Loading(html.Div(id="live-insights-panel", className="mb-4"), type="circle"),
-
-        # ── Ytelse ────────────────────────────────────────────
-        section_header("📊", "Ytelse"),
-
-        dbc.Row([
-            dbc.Col([
-                html.Div(dcc.Graph(id="chart-roas"), className="chart-wrapper"),
-                chart_insight_text("insight-roas"),
-            ], md=6),
-            dbc.Col([
-                html.Div(dcc.Graph(id="chart-conv"), className="chart-wrapper"),
-                chart_insight_text("insight-conv"),
-            ], md=6),
-        ], className="mb-1"),
-
-        dbc.Row([
-            dbc.Col([
-                html.Div(dcc.Graph(id="chart-spend-pie"), className="chart-wrapper"),
-                chart_insight_text("insight-spend"),
-            ], md=6),
-            dbc.Col([
-                html.Div(dcc.Graph(id="chart-weekly"), className="chart-wrapper"),
-                chart_insight_text("insight-weekly"),
-            ], md=6),
-        ], className="mb-3"),
-
-        # ── Avansert ML-analyse (optional) ────────────────────
-        section_header("🔮", "Avansert ML-analyse"),
-        html.P(
-            "Valgfritt: XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
-            "Walk-forward backtesting (LinearRegression vs XGBoost) · "
-            "Isolation Forest + z-score avviksdeteksjon.",
-            className="text-muted small mb-3",
-        ),
-        dbc.Button("✦ Kjør avansert ML-analyse", id="btn-ml", color="outline-success", className="mb-3"),
-        dcc.Loading(html.Div(id="ml-out"), type="circle"),
 
         html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
         html.P(
@@ -660,6 +684,9 @@ anomaly_notification = html.Div(
 
         # Store anomaly data
         dcc.Store(id="anomaly-store"),
+        # Track last-run filters per tab to avoid redundant re-runs
+        dcc.Store(id="insights-last-filters", data=None),
+        dcc.Store(id="ml-last-filters", data=None),
     ]
 )
 
@@ -1263,13 +1290,19 @@ def _make_backtest_fig(r: dict) -> go.Figure:
 
 @app.callback(
     Output("ml-out", "children"),
-    Input("btn-ml", "n_clicks"),
-    State("dd-client", "value"),
-    State("dd-campaign", "value"),
-    State("dd-channel", "value"),
-    prevent_initial_call=True,
+    Output("ml-last-filters", "data"),
+    Input("main-tabs", "active_tab"),
+    Input("dd-client", "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel", "value"),
+    State("ml-last-filters", "data"),
 )
-def run_ml_analysis(_, client, campaign, channel):
+def run_ml_analysis(active_tab, client, campaign, channel, last_filters):
+    if active_tab != "tab-ml":
+        return dash.no_update, dash.no_update
+    current = {"client": client, "campaign": campaign, "channel": channel}
+    if current == last_filters:
+        return dash.no_update, dash.no_update
     try:
         df = apply_filters(client, campaign, channel)
         xgb_results  = predict_xgboost_with_intervals(df)
@@ -1277,9 +1310,9 @@ def run_ml_analysis(_, client, campaign, channel):
         z_anomalies  = detect_anomalies_zscore(df)
         if_anomalies = detect_anomalies_isolation_forest(df)
         recs         = suggest_budget_reallocation(df)
-        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs)
+        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs), current
     except Exception as e:
-        return dbc.Alert(f"ML-feil: {e}", color="danger")
+        return dbc.Alert(f"ML-feil: {e}", color="danger"), current
 
 
 @app.callback(
@@ -1298,17 +1331,25 @@ def update_chart_insights(client, campaign, channel):
 
 @app.callback(
     Output("live-insights-panel", "children"),
+    Output("insights-last-filters", "data"),
+    Input("main-tabs", "active_tab"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
+    State("insights-last-filters", "data"),
 )
-def update_live_insights(client, campaign, channel):
+def update_live_insights(active_tab, client, campaign, channel, last_filters):
+    if active_tab != "tab-innsikt":
+        return dash.no_update, dash.no_update
+    current = {"client": client, "campaign": campaign, "channel": channel}
+    if current == last_filters:
+        return dash.no_update, dash.no_update
     try:
         context = build_context(get_df(), client, campaign, channel)
         data = generate_insights(context, model=DEFAULT_MODEL)
-        return render_insights(data)
+        return render_insights(data), current
     except Exception as e:
-        return ai_error_alert(e)
+        return ai_error_alert(e), current
 
 
 @app.callback(
