@@ -1,13 +1,11 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
 dash>=2.17.0
 dash-bootstrap-components>=1.6.0
 plotly>=5.20.0
 pandas>=2.0.0
 groq>=0.9.0
-requests>=2.31.0
 python-dotenv>=1.0.0
 scikit-learn>=1.4.0
 xgboost>=2.0.0
 google-genai>=1.0.0
 mistralai>=1.0.0
+gunicorn>=21.0.0

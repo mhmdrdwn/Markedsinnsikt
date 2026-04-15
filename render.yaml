@@ -3,7 +3,12 @@ services:
     name: markedsinnsikt-dashboard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    startCommand: python dashboard.py
     envVars:
       - key: GROQ_API_KEY
-        sync: false  # set manually in Render dashboard
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: MISTRAL_API_KEY
+        sync: false

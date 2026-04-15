@@ -68,14 +68,15 @@ def get_df() -> pd.DataFrame:
 
 
 def apply_filters(client="All", campaign="All", channel="All") -> pd.DataFrame:
-    df = get_df().copy()
+    df = get_df()
+    mask = pd.Series(True, index=df.index)
     if client and client != "All":
-        df = df[df["client"] == client]
+        mask &= df["client"] == client
     if campaign and campaign != "All":
-        df = df[df["campaign"] == campaign]
+        mask &= df["campaign"] == campaign
     if channel and channel != "All":
-        df = df[df["channel"] == channel]
-    return df
+        mask &= df["channel"] == channel
+    return df[mask]
 
 
 def get_filters_data(client="All") -> dict:
