@@ -1119,6 +1119,18 @@ def render_ml_results(
         fig_fi.update_layout(**CHART_LAYOUT)
         fi_section = [dcc.Graph(figure=fig_fi)]
 
+    # ── Tooltip helper ────────────────────────────────────────────────────
+    def _th(label: str, tip_id: str, tip_text: str) -> html.Th:
+        return html.Th([
+            label,
+            html.Sup(
+                " ⓘ",
+                id=tip_id,
+                style={"cursor": "help", "color": "#94a3b8", "fontSize": "0.65rem"},
+            ),
+            dbc.Tooltip(tip_text, target=tip_id, placement="top"),
+        ])
+
     # ── 4. Backtesting table ──────────────────────────────────────────────
     if backtest:
         bt_rows = [
@@ -1135,9 +1147,12 @@ def render_ml_results(
         bt_table = dbc.Table(
             [
                 html.Thead(html.Tr([
-                    html.Th("Kanal"), html.Th("Lin. MAE"), html.Th("XGB MAE"),
-                    html.Th("Lin. RMSE"), html.Th("XGB RMSE"),
-                    html.Th("XGB forbedring vs lin."),
+                    html.Th("Kanal"),
+                    _th("Lin. MAE",  "tip-lr-mae",   "Mean Absolute Error — gjennomsnittlig absolutt ROAS-avvik for lineær regresjon."),
+                    _th("XGB MAE",   "tip-xgb-mae",  "Mean Absolute Error for XGBoost. Lavere er bedre."),
+                    _th("Lin. RMSE", "tip-lr-rmse",  "Root Mean Squared Error — straffer store feil tyngre enn MAE."),
+                    _th("XGB RMSE",  "tip-xgb-rmse", "Root Mean Squared Error for XGBoost."),
+                    _th("XGB forbedring vs lin.", "tip-improvement", "Positiv = XGBoost er bedre enn lineær baseline. Negativ = baseline vinner."),
                 ])),
                 html.Tbody(bt_rows),
             ],
@@ -1255,16 +1270,14 @@ def render_ml_results(
 
         error_section = [
             html.H6("🔎 Feilanalyse", className="fw-bold mt-3 mb-1"),
-            html.P(
-                "Bias = gjennomsnittlig retningsfeil (positiv = undervurdering, negativ = overvurdering). "
-                "Trendretning = andel uker der opp/ned-bevegelse er korrekt predikert.",
-                className="text-muted small mb-2",
-            ),
             dbc.Table(
                 [
                     html.Thead(html.Tr([
-                        html.Th("Kanal"), html.Th("MAE"), html.Th("Bias"),
-                        html.Th("Trendretning"), html.Th("Sviktmodus"),
+                        html.Th("Kanal"),
+                        _th("MAE",          "tip-err-mae",   "Mean Absolute Error — gjennomsnittlig absolutt avvik mellom prediksjon og faktisk ROAS."),
+                        _th("Bias",         "tip-err-bias",  "Gjennomsnittlig retningsfeil. Positiv = modellen undervurderer. Negativ = overvurderer."),
+                        _th("Trendretning", "tip-err-dir",   "Andel uker der modellen korrekt predikerer om ROAS stiger eller faller."),
+                        _th("Sviktmodus",   "tip-err-fail",  "Klassifisert feilmønster basert på bias og trendretning."),
                     ])),
                     html.Tbody(error_rows),
                 ],
@@ -1305,7 +1318,16 @@ def render_ml_results(
                     dbc.CardHeader(html.Strong(imp["channel"])),
                     dbc.CardBody([
                         html.P([
-                            html.Span("Beslutningsnøyaktighet: ", className="text-muted small"),
+                            html.Span([
+                                "Beslutningsnøyaktighet ",
+                                html.Sup("ⓘ", id=f"tip-da-{imp['channel'].replace(' ','-')}",
+                                         style={"cursor": "help", "color": "#94a3b8", "fontSize": "0.65rem"}),
+                                dbc.Tooltip(
+                                    "1 − (MAE / gj.snitt ROAS). 100% = perfekt prediksjon.",
+                                    target=f"tip-da-{imp['channel'].replace(' ','-')}",
+                                    placement="top",
+                                ),
+                            ], className="text-muted small"),
                             html.Span(
                                 f"{imp['decision_accuracy_proxy']:.1f}%",
                                 className=(
@@ -1316,7 +1338,16 @@ def render_ml_results(
                             ),
                         ], className="mb-1"),
                         html.P([
-                            html.Span("Estimert ukentlig feilkostnad: ", className="text-muted small"),
+                            html.Span([
+                                "Ukentlig feilkostnad ",
+                                html.Sup("ⓘ", id=f"tip-wc-{imp['channel'].replace(' ','-')}",
+                                         style={"cursor": "help", "color": "#94a3b8", "fontSize": "0.65rem"}),
+                                dbc.Tooltip(
+                                    "MAE × gj.snitt ukentlig forbruk. Estimert inntekt i risiko ved å handle på feil ROAS-prediksjon.",
+                                    target=f"tip-wc-{imp['channel'].replace(' ','-')}",
+                                    placement="top",
+                                ),
+                            ], className="text-muted small"),
                             html.Span(f"NOK {imp['estimated_weekly_cost_of_error']:,.0f}", className="fw-bold"),
                         ], className="mb-0"),
                         html.Small(f"Gj.snitt ROAS: {imp['avg_actual_roas']:.2f}x · MAE: {imp['mae']:.3f}x",
