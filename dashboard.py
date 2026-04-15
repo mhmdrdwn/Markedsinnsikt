@@ -50,9 +50,9 @@ def ai_error_alert(e: Exception) -> dbc.Alert:
     return dbc.Alert(f"Feil: {e}", color="danger", className="mt-2")
 
 CHANNEL_COLORS = {
-    "Google Ads": "#4285F4",
-    "Meta Ads": "#1877F2",
-    "TikTok Ads": "#69C9D0",
+    "Google Ads": "#4285F4",   # Google blue
+    "Meta Ads":   "#F97316",   # orange
+    "TikTok Ads": "#10B981",   # green
 }
 
 # ---------------------------------------------------------------------------
