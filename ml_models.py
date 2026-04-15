@@ -253,7 +253,8 @@ def predict_xgboost_with_intervals(
             list(vals[-n_lags:])
             + [float(np.mean(vals[-3:])), float(len(vals))]
         )
-        pred = float(model.predict(np.array([next_feat], dtype=float))[0])
+        next_feat_arr = np.array([next_feat], dtype=float)
+        pred = float(model.predict(next_feat_arr)[0])
 
         # 90% PI from residual std
         residuals = y - model.predict(X)
@@ -262,9 +263,17 @@ def predict_xgboost_with_intervals(
         upper = pred + z_val * std_r
         mae   = float(np.mean(np.abs(residuals)))
 
-        # Feature importance
         feat_names = [f"lag_{i+1}" for i in range(n_lags)] + ["rolling_mean", "trend"]
-        importance = dict(zip(feat_names, model.feature_importances_.tolist()))
+
+        # SHAP — TreeExplainer is fast (<50ms) for our model/data size
+        import shap as _shap
+        explainer   = _shap.TreeExplainer(model)
+        shap_matrix = explainer.shap_values(X)            # (n_samples, n_features)
+        shap_next   = explainer.shap_values(next_feat_arr)[0]  # (n_features,)
+
+        shap_global = dict(zip(feat_names, np.abs(shap_matrix).mean(axis=0).tolist()))
+        shap_local  = dict(zip(feat_names, shap_next.tolist()))
+        base_value  = float(explainer.expected_value)
 
         history = [
             {"week": int(w), "roas": round(float(r), 2) if pd.notna(r) else None}
@@ -278,7 +287,10 @@ def predict_xgboost_with_intervals(
             "lower_90":       round(lower, 2),
             "upper_90":       round(upper, 2),
             "mae":            round(mae, 3),
-            "feature_importance": importance,
+            "feature_importance": shap_global,   # now SHAP-based, not gain-based
+            "shap_global":    shap_global,
+            "shap_local":     shap_local,
+            "base_value":     round(base_value, 3),
             "history":        history,
         })
 

@@ -136,6 +136,58 @@ def get_analytics_summary(client, campaign, channel) -> dict:
     }
 
 
+def compute_portfolio_health(client, campaign, channel) -> dict:
+    """
+    Score 0–100 combining three signals:
+      - ROAS health   (40 pts): avg ROAS vs portfolio benchmark
+      - Trend health  (30 pts): share of channels with positive WoW ROAS
+      - Anomaly load  (30 pts): penalises detected anomalies relative to campaign count
+    """
+    df = apply_filters(client, campaign, channel)
+    full_df = get_df()
+
+    if df.empty:
+        return {"score": 0, "label": "Ingen data", "color": "#94a3b8"}
+
+    # ROAS health (40 pts)
+    avg_roas       = df["revenue"].sum() / df["spend"].sum() if df["spend"].sum() > 0 else 0
+    portfolio_roas = full_df["revenue"].sum() / full_df["spend"].sum() if full_df["spend"].sum() > 0 else avg_roas
+    roas_ratio     = min(avg_roas / portfolio_roas, 1.5) / 1.5  # cap at 1.5× benchmark
+    roas_pts       = round(roas_ratio * 40)
+
+    # Trend health (30 pts)
+    positive = 0
+    total_ch = 0
+    for _, grp in df.groupby("channel"):
+        weekly = grp.groupby("week").agg(spend=("spend","sum"), revenue=("revenue","sum")).sort_index()
+        if len(weekly) < 2:
+            continue
+        weekly["roas"] = weekly["revenue"] / weekly["spend"].replace(0, float("nan"))
+        roas_clean = weekly["roas"].dropna()
+        if len(roas_clean) >= 2:
+            total_ch += 1
+            if roas_clean.iloc[-1] >= roas_clean.iloc[-2]:
+                positive += 1
+    trend_pts = round((positive / total_ch * 30) if total_ch > 0 else 15)
+
+    # Anomaly load (30 pts)
+    n_anomalies  = len(detect_anomalies(df))
+    n_campaigns  = df["campaign"].nunique()
+    anomaly_rate = n_anomalies / max(n_campaigns, 1)
+    anomaly_pts  = round(max(0, 30 - anomaly_rate * 15))
+
+    score = roas_pts + trend_pts + anomaly_pts
+
+    if score >= 75:
+        label, color = "God", "#10b981"
+    elif score >= 50:
+        label, color = "Moderat", "#f59e0b"
+    else:
+        label, color = "Svak", "#ef4444"
+
+    return {"score": score, "label": label, "color": color}
+
+
 def get_chart_roas(client, campaign, channel) -> list:
     df = apply_filters(client, campaign, channel)
     agg = df.groupby("channel")[["revenue", "spend"]].sum().reset_index()
@@ -543,6 +595,7 @@ main = dbc.Col(
                 dbc.Tab(
                     [
                         section_header("📈", "Oversikt"),
+                        html.Div(id="portfolio-health-bar", className="mb-3"),
                         dbc.Row(id="kpi-row", className="mb-4 g-3"),
 
                         section_header("📊", "Ytelse"),
@@ -705,6 +758,7 @@ def update_campaign_options(client):
 
 
 @app.callback(
+    Output("portfolio-health-bar", "children"),
     Output("kpi-row", "children"),
     Output("row-count", "children"),
     Output("anomaly-store", "data"),
@@ -719,6 +773,43 @@ def update_kpis(client, campaign, channel):
     summary   = get_analytics_summary(client, campaign, channel)
     trends    = summary.get("trends", {})
     anomalies = summary.get("anomalies", [])
+    health    = compute_portfolio_health(client, campaign, channel)
+
+    health_bar = html.Div(
+        [
+            html.Div(
+                [
+                    html.Span("Porteføljehelse", style={
+                        "fontSize": "0.7rem", "fontWeight": "700", "textTransform": "uppercase",
+                        "letterSpacing": "0.08em", "color": "#64748b", "marginRight": "0.75rem",
+                    }),
+                    html.Span(f"{health['score']}/100", style={
+                        "fontSize": "1.1rem", "fontWeight": "700", "color": health["color"],
+                        "marginRight": "0.4rem",
+                    }),
+                    html.Span(health["label"], style={
+                        "fontSize": "0.78rem", "fontWeight": "600", "color": health["color"],
+                    }),
+                ],
+                style={"display": "flex", "alignItems": "center", "marginBottom": "0.4rem"},
+            ),
+            html.Div(
+                html.Div(style={
+                    "width": f"{health['score']}%",
+                    "height": "6px",
+                    "borderRadius": "3px",
+                    "background": health["color"],
+                    "transition": "width 0.4s ease",
+                }),
+                style={
+                    "background": "#e2e8f0", "borderRadius": "3px",
+                    "height": "6px", "width": "100%",
+                },
+            ),
+        ],
+        style={"padding": "0.75rem 1rem", "background": "#f8fafc",
+               "borderRadius": "8px", "border": "1px solid #e2e8f0"},
+    )
 
     cards = [
         kpi_card("Totalt forbruk", f"NOK {data['total_spend']:,.0f}",  trends.get("spend_wow"),       "kpi-card-amber"),
@@ -734,6 +825,7 @@ def update_kpis(client, campaign, channel):
     bell_style = {**bell_style_base, "display": "block" if anomalies else "none"}
 
     return (
+        health_bar,
         cards,
         f"{data['row_count']} rader i gjeldende visning",
         anomalies,
@@ -1150,22 +1242,76 @@ def render_ml_results(
         margin=dict(t=50, b=90, l=8, r=8),
     )
 
-    # ── 3. Feature importance (first channel) ────────────────────────────
+    # ── 3. SHAP explainability ────────────────────────────────────────────
+    FEAT_LABELS = {"lag_1": "Forrige uke (lag 1)", "lag_2": "To uker siden (lag 2)",
+                   "rolling_mean": "Rullende snitt (3 uker)", "trend": "Tidsindeks"}
+
     fi_section: list = []
     if xgb_results:
-        fi   = xgb_results[0]["feature_importance"]
-        ch0  = xgb_results[0]["channel"]
-        labels = {"lag_1": "Lag 1", "lag_2": "Lag 2",
-                  "rolling_mean": "Rullende snitt", "trend": "Trend"}
-        fig_fi = px.bar(
-            x=[labels.get(k, k) for k in fi],
-            y=list(fi.values()),
-            title=f"XGBoost feature importance — {ch0}",
-            labels={"x": "Feature", "y": "Vekt"},
-            color_discrete_sequence=["#3b82f6"],
+        # Global SHAP — mean |SHAP| across all channels
+        all_channels = [p["channel"] for p in xgb_results]
+        rows_global = []
+        for p in xgb_results:
+            for feat, val in p["shap_global"].items():
+                rows_global.append({"feature": FEAT_LABELS.get(feat, feat),
+                                     "channel": p["channel"], "shap": round(val, 4)})
+
+        fig_global = px.bar(
+            rows_global, x="shap", y="feature", color="channel",
+            orientation="h", barmode="group",
+            color_discrete_map=CHANNEL_COLORS,
+            title="SHAP — gjennomsnittlig absoluttverdi per feature",
+            labels={"shap": "Gj.snitt |SHAP|", "feature": ""},
         )
-        fig_fi.update_layout(**CHART_LAYOUT)
-        fi_section = [dcc.Graph(figure=fig_fi)]
+        fig_global.update_layout(**CHART_LAYOUT)
+        fig_global.update_layout(
+            legend=dict(orientation="h", y=-0.3, font=dict(size=10)),
+            margin=dict(t=46, b=80, l=8, r=8),
+        )
+
+        # Local SHAP — next-week prediction breakdown for first channel
+        p0 = xgb_results[0]
+        local_items = sorted(p0["shap_local"].items(), key=lambda x: x[1])
+        rows_local = [
+            {
+                "feature": FEAT_LABELS.get(k, k),
+                "shap": round(v, 4),
+                "color": "#10b981" if v >= 0 else "#ef4444",
+            }
+            for k, v in local_items
+        ]
+        fig_local = go.Figure(go.Bar(
+            x=[r["shap"] for r in rows_local],
+            y=[r["feature"] for r in rows_local],
+            orientation="h",
+            marker_color=[r["color"] for r in rows_local],
+            text=[f"{r['shap']:+.3f}" for r in rows_local],
+            textposition="outside",
+        ))
+        base = p0["base_value"]
+        pred = p0["predicted_roas"]
+        fig_local.update_layout(**CHART_LAYOUT)
+        fig_local.update_layout(
+            title=f"SHAP lokal forklaring — {p0['channel']} neste uke "
+                  f"(basis {base:.2f}x → prediksjon {pred:.2f}x)",
+            xaxis_title="SHAP-bidrag (x)", yaxis_title="",
+            margin=dict(t=50, b=24, l=8, r=60),
+        )
+        fig_local.add_vline(x=0, line_width=1, line_color="#94a3b8")
+
+        fi_section = [
+            html.H6("SHAP-forklarbarhet", className="fw-bold mt-3 mb-1"),
+            html.P(
+                "Global: hvilke features driver ROAS-prediksjoner på tvers av kanaler. "
+                "Lokal: hvordan hver feature bidro til neste ukes prediksjon.",
+                className="text-muted small mb-2",
+            ),
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_global), md=6),
+                dbc.Col(dcc.Graph(figure=fig_local),  md=6),
+            ]),
+            html.Hr(),
+        ]
 
     # ── Tooltip helper ────────────────────────────────────────────────────
     def _th(label: str, tip_id: str, tip_text: str) -> html.Th:

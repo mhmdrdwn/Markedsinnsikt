@@ -9,3 +9,4 @@ xgboost>=2.0.0
 google-genai>=1.0.0
 mistralai>=1.0.0
 gunicorn>=21.0.0
+shap>=0.44.0

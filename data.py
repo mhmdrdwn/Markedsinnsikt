@@ -2,32 +2,26 @@ import pandas as pd
 import random
 from datetime import date, timedelta
 
-random.seed(7391)  # project-specific seed — reproducible but unique
+_SEED = 7391  # project-specific seed — reproducible but unique
 
 CLIENTS = [
-    "Ra Solar",
-    "Osiris Organics",
-    "Isis Apparel",
-    "Horus Media",
-    "Anubis Analytics",
-    "Thoth Technology",
-    "Bastet Beauty",
-    "Hathor Hospitality",
-    "Khnum Craft",
-    "Sekhmet Sport",
+    "Salah Brand",
+    "Haaland Brand",
+    "Mbappe Brand",
+    "Vinicius Brand",
+    "Bellingham Brand",
+    "Rodri Brand",
+    "Yamal Brand",
 ]
 
 CAMPAIGNS = {
-    "Ra Solar":           ["New Year Reset", "Spring Detox", "Marathon Prep"],
-    "Osiris Organics":    ["Winter Capsule", "Outlet Weekend", "Influencer Drop"],
-    "Isis Apparel":       ["Kitchen Remodel", "Smart Home Launch", "Spring Clean"],
-    "Horus Media":        ["Streetwear Release", "Back to Basics", "Collab Drop"],
-    "Anubis Analytics":   ["Cabin Season", "Holiday Decor", "Summer Refresh"],
-    "Thoth Technology":   ["Healthy Snack Box", "Office Bundle", "Student Deal"],
-    "Bastet Beauty":      ["Podcast Ad Push", "Newsletter Growth", "Creator Fund"],
-    "Hathor Hospitality": ["Outdoor Season", "Winter Sports", "Gear Clearance"],
-    "Khnum Craft":        ["Loyalty Launch", "Weekend Flash", "Member Perks"],
-    "Sekhmet Sport":      ["Trail Running Club", "Gym Opening", "Team Kits"],
+    "Salah Brand":      ["King of Egypt Kit", "Ramadan Community Drive", "Charity Foundation Push"],
+    "Haaland Brand":    ["Goal Machine Collection", "Nordic Fitness Series", "Champions Energy Launch"],
+    "Mbappe Brand":     ["Speed Icon Drop", "Real Deal Launch", "Youth Academy Fund"],
+    "Vinicius Brand":   ["Vini Jr Street Culture", "Samba Energy Push", "Anti-Racism Stand"],
+    "Bellingham Brand": ["Bellingham x Dior", "Real Debut Collection", "England Rising Star"],
+    "Rodri Brand":      ["Ballon d'Or Celebration", "La Liga Masterclass", "Calm Under Pressure"],
+    "Yamal Brand":      ["Next Gen Launch", "Barcelona Academy", "Gen Z Wave"],
 }
 
 CHANNELS = ["Google Ads", "Meta Ads", "TikTok Ads"]
@@ -35,49 +29,40 @@ CHANNELS = ["Google Ads", "Meta Ads", "TikTok Ads"]
 GOALS = ["Brand Awareness", "Lead Generation", "Direct Sales", "App Installs"]
 
 AUDIENCES = [
-    "18-30 urban wellness seekers",
-    "25-40 mythology enthusiasts",
-    "22-35 streetwear and culture fans",
-    "30-50 sustainability-conscious shoppers",
-    "18-28 health-focused students",
-    "35-55 premium lifestyle seekers",
-    "20-32 social media creatives",
-    "28-45 remote professionals",
-    "40-60 home improvement planners",
-    "18-24 Gen Z trend adopters",
-    "30-45 working parents",
-    "50-65 culturally engaged retirees",
+    "18-30 football fans and streetwear enthusiasts",
+    "16-24 Gen Z sports and culture followers",
+    "25-40 premium sports lifestyle shoppers",
+    "18-28 aspiring athletes and fitness enthusiasts",
+    "20-35 football gaming and fantasy sports players",
+    "30-50 sports memorabilia and kit collectors",
+    "16-22 social media natives following football culture",
+    "25-45 brand-conscious football supporters",
+    "18-32 charity and socially engaged sports fans",
+    "22-38 multi-sport performance apparel shoppers",
 ]
 
 AD_TEXTS = [
-    "Harness the power of the sun. Ra Solar brings clean energy to every home.",
-    "Dawn is yours. Switch to solar and cut your bills from day one.",
-    "Illuminate every room — and your future. Solar panels, installed in a day.",
-    "Ancient wisdom, modern nutrition. Osiris Organics — grown with intention.",
-    "Detox your routine. Monthly wellness boxes inspired by the Nile valley.",
-    "Eat like royalty. Organic bundles delivered to your door every week.",
-    "Wear your mythology. Isis Apparel — limited pieces, infinite story.",
-    "The goddess drop has arrived. Sacred-inspired fashion, available now.",
-    "Two icons. One collection. The collab the culture has been waiting for.",
-    "Be seen from every angle. Horus Media — reach that never blinks.",
-    "Your podcast, heard by thousands. Sky-high ad placements start here.",
-    "Grow your list, not just your followers. Newsletter strategy that converts.",
-    "The truth is in the data. Anubis Analytics — measure what matters.",
-    "Every decision, weighed with precision. Join 500+ brands we guide.",
-    "Loyalty rewarded. Exclusive member insights, unlocked for you.",
-    "Knowledge is power. Thoth Technology — tools built for curious minds.",
-    "Your wisdom app, reimagined. Smarter workflows start with one download.",
-    "Write the future of your business. Thoth's creator fund is now open.",
-    "Your skin deserves ritual. Bastet Beauty — nine steps to radiant glow.",
-    "Sacred ingredients, modern formulas. The cat-approved skincare routine.",
-    "Moonlit, minimal, magical. The new ritual kit is here — limited stock.",
-    "Taste the divine. Hathor Hospitality — where every meal is a ceremony.",
-    "Book your golden getaway. Curated stays inspired by ancient celebration.",
-    "Celebrate every season. Festival packages crafted for unforgettable moments.",
-    "Shape something real. Khnum Craft — artisan kits for the creator in you.",
-    "From the Nile to your studio. Clay, tools, and tradition in one bundle.",
-    "Train like a warrior. Sekhmet Sport — built for those who refuse to quit.",
-    "The desert doesn't wait. Sign up for the Lioness Run Series today.",
+    "Mo Salah's official collection. Worn on the pitch. Built for the streets.",
+    "Give back this Ramadan. Every purchase supports Mo Salah's Foundation.",
+    "The King has a new kit. Limited edition — available while stocks last.",
+    "Train like Haaland. The Nordic Fitness Series starts this week.",
+    "Pure power. Pure focus. The Goal Machine Collection is here.",
+    "Champions run on more than talent. Fuel your game with Haaland Energy.",
+    "Mbappé moves at his own speed. The Speed Icon Drop — one night only.",
+    "A new era begins. Mbappé x Real Madrid — the official launch collection.",
+    "Invest in the next generation. Mbappé's Youth Academy Fund is open.",
+    "Vini Jr brings the street to the pitch. The collab you didn't see coming.",
+    "Samba never stops. Vinicius Jr's limited streetwear drop is live.",
+    "Football is for everyone. Stand with Vini Jr — wear the message.",
+    "Bellingham x Dior. Where football meets fashion. Exclusively yours.",
+    "The debut that changed everything. Own a piece of the Real Madrid story.",
+    "England's next captain. The Rising Star collection — inspired by Jude.",
+    "Rodri. Ballon d'Or. One collection to mark a historic season.",
+    "Read the game. Control the tempo. La Liga Masterclass — now available.",
+    "Composure is a skill. Train with Rodri's performance series.",
+    "Lamine Yamal is just getting started. The Next Gen Launch is here.",
+    "Born in 2007. Barcelona's future. Yamal's debut collection — limited run.",
+    "Gen Z runs football now. Join the wave — Yamal x TikTok collab drop.",
 ]
 
 
@@ -92,6 +77,7 @@ def _channel_multipliers(channel: str) -> dict:
 
 
 def generate_dataset() -> pd.DataFrame:
+    random.seed(_SEED)
     rows = []
     start_date = date(2025, 9, 1)
 
