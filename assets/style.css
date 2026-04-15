@@ -1,0 +1,158 @@
+/* ===================================================
+   Markedsinnsikt AI — Custom UI stylesheet
+   =================================================== */
+
+/* --- Font --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+*, body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background-color: #f1f5f9;
+}
+
+/* ===================================================
+   Sidebar brand block (dark gradient header)
+   =================================================== */
+.sidebar-brand {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.25rem;
+}
+
+/* ===================================================
+   Section labels  (thin uppercase divider line)
+   =================================================== */
+.section-label {
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: #94a3b8;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, #e2e8f0, transparent);
+}
+
+/* ===================================================
+   Page header banner
+   =================================================== */
+.page-header {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+  border-radius: 16px;
+  padding: 1.5rem 1.75rem;
+  margin-bottom: 1.75rem;
+  color: white;
+}
+.page-header h2 {
+  color: white !important;
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.page-header p {
+  color: rgba(255, 255, 255, 0.58) !important;
+  margin: 0.3rem 0 0;
+  font-size: 0.84rem;
+}
+
+/* ===================================================
+   KPI cards — colored left-border accents
+   =================================================== */
+.kpi-card .card {
+  border-radius: 12px !important;
+  border-top: none !important;
+  border-right: none !important;
+  border-bottom: none !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05), 0 2px 10px rgba(0,0,0,0.04) !important;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+  background: #ffffff;
+}
+.kpi-card .card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.09) !important;
+}
+.kpi-card-amber .card  { border-left: 4px solid #f59e0b !important; }
+.kpi-card-green .card  { border-left: 4px solid #10b981 !important; }
+.kpi-card-blue .card   { border-left: 4px solid #3b82f6 !important; }
+.kpi-card-purple .card { border-left: 4px solid #7c3aed !important; }
+.kpi-card-teal .card   { border-left: 4px solid #06b6d4 !important; }
+
+/* ===================================================
+   Chart card wrappers
+   =================================================== */
+.chart-wrapper {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e8edf3;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  padding: 0.5rem 0.5rem 0;
+  margin-bottom: 0.5rem;
+}
+
+/* ===================================================
+   Chart insight text (below each chart)
+   =================================================== */
+.chart-insight {
+  font-size: 0.78rem;
+  color: #64748b;
+  font-style: italic;
+  padding: 0.3rem 0.65rem;
+  border-left: 3px solid #3b82f6;
+  background: #f8fafc;
+  border-radius: 0 6px 6px 0;
+  margin: 0 0.25rem 1rem;
+  min-height: 1.4rem;
+}
+
+/* ===================================================
+   Buttons
+   =================================================== */
+.btn {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em;
+}
+
+/* ===================================================
+   Cards & alerts (rounded corners everywhere)
+   =================================================== */
+.card   { border-radius: 10px !important; }
+.alert  { border-radius: 10px !important; }
+
+/* ===================================================
+   Notification bell
+   =================================================== */
+#notif-wrapper .btn {
+  border-radius: 20px !important;
+  font-size: 0.8rem !important;
+  padding: 0.3rem 0.85rem !important;
+  box-shadow: 0 2px 10px rgba(220,38,38,0.35) !important;
+}
+
+/* ===================================================
+   Chat panel
+   =================================================== */
+#chat-panel {
+  border-radius: 16px !important;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.22) !important;
+}
+
+/* ===================================================
+   Custom scrollbar
+   =================================================== */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }

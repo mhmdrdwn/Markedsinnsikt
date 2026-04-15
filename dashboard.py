@@ -10,12 +10,39 @@ from dash import dcc, html, Input, Output, State, ctx
 import dash_bootstrap_components as dbc
 import plotly.express as px
 
+import plotly.graph_objects as go
+
 from data import generate_dataset
 from ai_assistant import (
     build_context, generate_insights, answer_question, detect_anomalies
 )
+from ml_models import predict_next_week, detect_anomalies_zscore, suggest_budget_reallocation
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
+
+
+def groq_error_alert(e: Exception) -> dbc.Alert:
+    """Return a user-friendly Norwegian alert for Groq API errors."""
+    msg = str(e)
+    if "429" in msg or "rate_limit" in msg.lower():
+        # Try to extract the suggested wait time from the error message
+        import re
+        wait = re.search(r"Please try again in ([\dmhs.]+)", msg)
+        wait_str = f" Prøv igjen om ca. {wait.group(1)}." if wait else ""
+        return dbc.Alert(
+            [
+                html.Strong("Groq daglig grense nådd. "),
+                f"Gratis-nivået har et daglig tokengrense.{wait_str}",
+                html.Br(),
+                html.Small(
+                    "Tips: reduser filteret til én kunde/kanal for å bruke færre tokens.",
+                    className="text-muted",
+                ),
+            ],
+            color="warning",
+            className="mt-2",
+        )
+    return dbc.Alert(f"Feil: {e}", color="danger", className="mt-2")
 
 CHANNEL_COLORS = {
     "Google Ads": "#4285F4",
@@ -211,35 +238,55 @@ def compute_chart_insights(client, campaign, channel) -> dict:
 
 app = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.FLATLY],
+    external_stylesheets=[
+        dbc.themes.FLATLY,
+        "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
+    ],
     title="Markedsinnsikt AI",
 )
 server = app.server
+
+# Consistent Plotly chart theme
+CHART_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="Inter, system-ui, sans-serif", size=11.5, color="#374151"),
+    margin=dict(t=46, b=24, l=8, r=8),
+    xaxis=dict(showgrid=True, gridcolor="#f1f5f9", gridwidth=1, zeroline=False),
+    yaxis=dict(showgrid=True, gridcolor="#f1f5f9", gridwidth=1, zeroline=False),
+    legend=dict(font=dict(size=11)),
+)
 
 
 # ---------------------------------------------------------------------------
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def kpi_card(label: str, value: str, trend: float | None = None) -> dbc.Col:
+def kpi_card(label: str, value: str, trend: float | None = None, card_class: str = "kpi-card-blue") -> dbc.Col:
     if trend is not None:
-        arrow  = "▲" if trend >= 0 else "▼"
-        color  = "text-success" if trend >= 0 else "text-danger"
-        trend_el = html.Small(f"{arrow} {abs(trend):.1f}% WoW", className=f"{color} fw-semibold")
+        arrow    = "▲" if trend >= 0 else "▼"
+        color    = "text-success" if trend >= 0 else "text-danger"
+        trend_el = html.Small(f"{arrow} {abs(trend):.1f}% u/u", className=f"{color} fw-semibold")
     else:
         trend_el = html.Span()
 
     return dbc.Col(
         dbc.Card(
             dbc.CardBody([
-                html.P(label, className="text-muted mb-1 small fw-semibold"),
-                html.H4(value, className="mb-0 fw-bold"),
+                html.P(label, className="text-muted mb-1 small fw-semibold text-uppercase",
+                       style={"letterSpacing": "0.06em", "fontSize": "0.7rem"}),
+                html.H4(value, className="mb-1 fw-bold", style={"fontSize": "1.3rem"}),
                 trend_el,
             ]),
-            className="shadow-sm h-100",
+            className="h-100",
         ),
         xs=6, md=True,
+        className=f"kpi-card {card_class}",
     )
+
+
+def section_header(icon: str, title: str) -> html.Div:
+    return html.Div(html.Span(f"{icon}  {title}"), className="section-label")
 
 
 def render_bubble(msg: dict) -> html.Div:
@@ -271,23 +318,36 @@ def render_bubble(msg: dict) -> html.Div:
 
 sidebar = dbc.Col(
     [
-        html.H5("📊 Markedsinnsikt AI", className="fw-bold mb-0"),
-        html.Small("KI-drevet markedsanalyse", className="text-muted d-block mb-3"),
-        html.Hr(),
+        # Brand block
+        html.Div(
+            [
+                html.Div("📊", style={"fontSize": "1.6rem", "lineHeight": "1", "marginBottom": "0.3rem"}),
+                html.Div("Markedsinnsikt AI",
+                         style={"fontWeight": "700", "fontSize": "0.92rem",
+                                "color": "white", "letterSpacing": "-0.01em"}),
+                html.Div("KI-drevet markedsanalyse",
+                         style={"fontSize": "0.7rem", "color": "rgba(255,255,255,0.5)",
+                                "marginTop": "0.15rem"}),
+            ],
+            className="sidebar-brand",
+        ),
 
-        dbc.Label("Kunde", className="fw-semibold"),
+        # Filters label
+        html.Div(html.Span("Filtre"), className="section-label"),
+
+        dbc.Label("Kunde", className="fw-semibold text-muted small mb-1"),
         dcc.Dropdown(id="dd-client", options=[], value="All", clearable=False, className="mb-3"),
 
-        dbc.Label("Kampanje", className="fw-semibold"),
+        dbc.Label("Kampanje", className="fw-semibold text-muted small mb-1"),
         dcc.Dropdown(id="dd-campaign", options=[], value="All", clearable=False, className="mb-3"),
 
-        dbc.Label("Kanal", className="fw-semibold"),
+        dbc.Label("Kanal", className="fw-semibold text-muted small mb-1"),
         dcc.Dropdown(id="dd-channel", options=[], value="All", clearable=False, className="mb-3"),
 
         dcc.Interval(id="init-trigger", interval=300, max_intervals=1),
 
-        html.Hr(),
-        html.Small(id="row-count", className="text-muted"),
+        html.Hr(style={"borderColor": "#e2e8f0", "marginTop": "0.5rem"}),
+        html.Div(id="row-count", className="text-muted small text-center"),
     ],
     width=2,
     style={
@@ -295,9 +355,9 @@ sidebar = dbc.Col(
         "top": 0,
         "height": "100vh",
         "overflowY": "auto",
-        "background": "#f8f9fa",
-        "padding": "1.5rem",
-        "borderRight": "1px solid #dee2e6",
+        "background": "#f8fafc",
+        "padding": "1.25rem",
+        "borderRight": "1px solid #e2e8f0",
     },
 )
 
@@ -459,76 +519,97 @@ chat_widget = html.Div(
 # ---------------------------------------------------------------------------
 
 def chart_insight_text(div_id: str) -> html.Div:
-    return html.Div(
-        id=div_id,
-        style={
-            "borderLeft": "3px solid #adb5bd",
-            "paddingLeft": "0.6rem",
-            "marginTop": "0.25rem",
-            "marginBottom": "0.5rem",
-            "fontSize": "0.82rem",
-            "color": "#6c757d",
-            "fontStyle": "italic",
-            "minHeight": "1.2rem",
-        },
-    )
+    return html.Div(id=div_id, className="chart-insight")
 
 
 main = dbc.Col(
     [
-        html.H2("📊 Markedsinnsikt AI", className="mt-3 mb-0"),
-        html.P(
-            "Et beslutningsstøtteverktøy som omgjør markedsdata til handlingsrettede anbefalinger "
-            "på tvers av kampanjer, kanaler og kunder.",
-            className="text-muted",
+        # ── Page header banner ────────────────────────────────
+        html.Div(
+            [
+                html.H2("Markedsinnsikt AI"),
+                html.P(
+                    "Et beslutningsstøtteverktøy som omgjør markedsdata til handlingsrettede "
+                    "anbefalinger på tvers av kampanjer, kanaler og kunder."
+                ),
+                html.Div(
+                    [
+                        html.Span("● Live",
+                                  style={"background": "rgba(16,185,129,0.18)",
+                                         "color": "#6ee7b7",
+                                         "padding": "0.2rem 0.65rem",
+                                         "borderRadius": "20px",
+                                         "fontSize": "0.72rem",
+                                         "fontWeight": "600",
+                                         "marginRight": "0.5rem"}),
+                        html.Span("Groq · llama-3.3-70b",
+                                  style={"background": "rgba(255,255,255,0.08)",
+                                         "color": "rgba(255,255,255,0.5)",
+                                         "padding": "0.2rem 0.65rem",
+                                         "borderRadius": "20px",
+                                         "fontSize": "0.72rem"}),
+                    ],
+                    style={"marginTop": "0.8rem"},
+                ),
+            ],
+            className="page-header",
         ),
-        html.Hr(),
 
-        # --- Section: Overview ---
-        html.H5("📈 Oversikt", className="fw-bold text-secondary mb-3"),
+        # ── Oversikt ──────────────────────────────────────────
+        section_header("📈", "Oversikt"),
         dbc.Row(id="kpi-row", className="mb-4 g-3"),
-        html.Hr(),
 
-        # --- Section: Performance ---
-        html.H5("📊 Ytelse", className="fw-bold text-secondary mb-3"),
+        # ── Ytelse ────────────────────────────────────────────
+        section_header("📊", "Ytelse"),
 
         dbc.Row([
             dbc.Col([
-                dcc.Graph(id="chart-roas"),
+                html.Div(dcc.Graph(id="chart-roas"), className="chart-wrapper"),
                 chart_insight_text("insight-roas"),
             ], md=6),
             dbc.Col([
-                dcc.Graph(id="chart-conv"),
+                html.Div(dcc.Graph(id="chart-conv"), className="chart-wrapper"),
                 chart_insight_text("insight-conv"),
             ], md=6),
-        ], className="mb-3"),
+        ], className="mb-1"),
 
         dbc.Row([
             dbc.Col([
-                dcc.Graph(id="chart-spend-pie"),
+                html.Div(dcc.Graph(id="chart-spend-pie"), className="chart-wrapper"),
                 chart_insight_text("insight-spend"),
             ], md=6),
             dbc.Col([
-                dcc.Graph(id="chart-weekly"),
+                html.Div(dcc.Graph(id="chart-weekly"), className="chart-wrapper"),
                 chart_insight_text("insight-weekly"),
             ], md=6),
-        ], className="mb-4"),
+        ], className="mb-3"),
 
-        html.Hr(),
-
-        # --- Section: AI Analysis ---
-        html.H5("🤖 KI-analyser", className="fw-bold text-secondary mb-1"),
+        # ── KI-analyser ───────────────────────────────────────
+        section_header("🤖", "KI-analyser"),
         html.P(
-            "Få automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger.",
+            "Automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger — drevet av Groq.",
             className="text-muted small mb-3",
         ),
-        dbc.Button("Generer innsikt", id="btn-insights", color="primary", className="mb-3"),
+        dbc.Button("✦ Generer innsikt", id="btn-insights", color="primary", className="mb-3"),
         dcc.Loading(html.Div(id="insights-out"), type="circle"),
 
-        html.Hr(),
-        html.Small(
+        html.Br(),
+
+        # ── Prediksjoner & ML ─────────────────────────────────
+        section_header("🔮", "Prediksjoner & ML"),
+        html.P(
+            "Lineær regresjon for neste ukes forbruk og ROAS · "
+            "Statistisk avviksdeteksjon (z-score) · "
+            "Budsjettoptimalisering basert på kanalytelse.",
+            className="text-muted small mb-3",
+        ),
+        dbc.Button("✦ Kjør ML-analyse", id="btn-ml", color="success", className="mb-3"),
+        dcc.Loading(html.Div(id="ml-out"), type="circle"),
+
+        html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
+        html.P(
             "Markedsinnsikt AI — Bygget med Dash & Groq · Dataene er syntetiske og kun for demoformål.",
-            className="text-muted d-block mb-5",
+            className="text-muted text-center small mb-5",
         ),
     ],
     width=10,
@@ -638,11 +719,11 @@ def update_kpis(client, campaign, channel):
     anomalies = summary.get("anomalies", [])
 
     cards = [
-        kpi_card("Totalt forbruk", f"NOK {data['total_spend']:,.0f}",  trends.get("spend_wow")),
-        kpi_card("Total inntekt",  f"NOK {data['total_revenue']:,.0f}", trends.get("revenue_wow")),
-        kpi_card("Konverteringer", f"{data['total_conversions']:,}",    trends.get("conversions_wow")),
-        kpi_card("Gj.snitt ROAS",  f"{data['avg_roas']:.2f}x",         trends.get("roas_wow")),
-        kpi_card("Gj.snitt CTR",   f"{data['avg_ctr']:.2f}%",          trends.get("ctr_wow")),
+        kpi_card("Totalt forbruk", f"NOK {data['total_spend']:,.0f}",  trends.get("spend_wow"),       "kpi-card-amber"),
+        kpi_card("Total inntekt",  f"NOK {data['total_revenue']:,.0f}", trends.get("revenue_wow"),     "kpi-card-green"),
+        kpi_card("Konverteringer", f"{data['total_conversions']:,}",    trends.get("conversions_wow"), "kpi-card-blue"),
+        kpi_card("Gj.snitt ROAS",  f"{data['avg_roas']:.2f}x",         trends.get("roas_wow"),        "kpi-card-purple"),
+        kpi_card("Gj.snitt CTR",   f"{data['avg_ctr']:.2f}%",          trends.get("ctr_wow"),         "kpi-card-teal"),
     ]
 
     bell_style_base = {
@@ -715,8 +796,8 @@ def update_charts(client, campaign, channel):
         title="ROAS per kanal",
         labels={"roas": "ROAS (x)", "channel": ""},
     )
-    fig_roas.update_traces(textposition="outside")
-    fig_roas.update_layout(showlegend=False)
+    fig_roas.update_traces(textposition="outside", marker_line_width=0)
+    fig_roas.update_layout(**CHART_LAYOUT, showlegend=False)
 
     fig_conv = px.bar(
         conv_data,
@@ -728,7 +809,7 @@ def update_charts(client, campaign, channel):
         color="conversions",
         color_continuous_scale="Blues",
     )
-    fig_conv.update_layout(coloraxis_showscale=False)
+    fig_conv.update_layout(**CHART_LAYOUT, coloraxis_showscale=False)
 
     fig_spend = px.pie(
         spend_data,
@@ -736,8 +817,12 @@ def update_charts(client, campaign, channel):
         color="channel",
         color_discrete_map=CHANNEL_COLORS,
         title="Forbruk per kanal",
+        hole=0.38,
     )
-    fig_spend.update_traces(textposition="inside", textinfo="percent+label")
+    fig_spend.update_traces(textposition="inside", textinfo="percent+label",
+                            marker=dict(line=dict(color="white", width=2)))
+    fig_spend.update_layout(**{k: v for k, v in CHART_LAYOUT.items()
+                               if k not in ("xaxis", "yaxis")})
 
     fig_weekly = px.line(
         weekly_data,
@@ -745,7 +830,10 @@ def update_charts(client, campaign, channel):
         markers=True,
         title="Ukentlig forbrukstrend",
         labels={"spend": "Forbruk (NOK)", "week": "Uke"},
+        color_discrete_sequence=["#3b82f6"],
     )
+    fig_weekly.update_traces(line=dict(width=2.5), marker=dict(size=7))
+    fig_weekly.update_layout(**CHART_LAYOUT)
 
     return fig_roas, fig_conv, fig_spend, fig_weekly
 
@@ -817,7 +905,7 @@ def generate_insights_cb(_, client, campaign, channel):
         data = generate_insights(context, model=DEFAULT_MODEL)
         return render_insights(data)
     except Exception as e:
-        return dbc.Alert(f"Feil: {e}", color="danger")
+        return groq_error_alert(e)
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +981,16 @@ def send_message(_, _submit, message, history, client, campaign, channel):
         reply = answer_question(history, context, model=DEFAULT_MODEL)
         history.append({"role": "assistant", "content": reply})
     except Exception as e:
-        history.append({"role": "assistant", "content": f"Beklager, noe gikk galt: {e}"})
+        msg = str(e)
+        if "429" in msg or "rate_limit" in msg.lower():
+            import re
+            wait = re.search(r"Please try again in ([\dmhs.]+)", msg)
+            wait_str = f" Prøv igjen om ca. {wait.group(1)}." if wait else ""
+            history.append({"role": "assistant", "content":
+                f"Groq daglig tokengrense er nådd.{wait_str} Prøv igjen senere, "
+                "eller filtrer til én kunde for å bruke færre tokens."})
+        else:
+            history.append({"role": "assistant", "content": f"Beklager, noe gikk galt: {e}"})
 
     return history, "", None
 
@@ -921,6 +1018,168 @@ def clear_chat(_):
     return []
 
 
+def render_ml_results(predictions: list, anomalies: list, recommendations: list) -> html.Div:
+    severity_color = {"high": "danger", "medium": "warning"}
+
+    # --- Prediction cards ---
+    pred_cards = []
+    for p in predictions:
+        mae_roas_str = f"±{p['mae_roas']:.2f}x" if p["mae_roas"] is not None else "–"
+        pred_cards.append(
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader(html.Strong(p["channel"])),
+                    dbc.CardBody([
+                        html.P([
+                            html.Span("Forbruk uke ", className="text-muted small"),
+                            html.Span(str(p["next_week"]), className="fw-bold"),
+                            html.Span(f":  NOK {p['predicted_spend']:,.0f}", className="fw-bold"),
+                        ], className="mb-1"),
+                        html.P([
+                            html.Span("ROAS: ", className="text-muted small"),
+                            html.Span(f"{p['predicted_roas']:.2f}x", className="fw-bold text-primary"),
+                        ], className="mb-1"),
+                        html.Small(
+                            f"MAE forbruk ±NOK {p['mae_spend']:,.0f}  |  MAE ROAS {mae_roas_str}",
+                            className="text-muted",
+                        ),
+                    ]),
+                ], className="shadow-sm h-100"),
+                md=4, className="mb-3",
+            )
+        )
+
+    # --- Prediction chart (actual ROAS + predicted point) ---
+    fig_pred = go.Figure()
+    for p in predictions:
+        ch = p["channel"]
+        color = CHANNEL_COLORS.get(ch, "#888")
+        history = p["history"]
+        weeks_h = [h["week"] for h in history]
+        roas_h  = [h["actual_roas"] for h in history]
+
+        fig_pred.add_trace(go.Scatter(
+            x=weeks_h, y=roas_h,
+            name=f"{ch} (faktisk)",
+            mode="lines+markers",
+            line=dict(color=color, width=2),
+            marker=dict(size=6),
+        ))
+        fig_pred.add_trace(go.Scatter(
+            x=[p["next_week"]], y=[p["predicted_roas"]],
+            name=f"{ch} (prediksjon uke {p['next_week']})",
+            mode="markers",
+            marker=dict(symbol="star", size=16, color=color,
+                        line=dict(width=1, color="white")),
+            showlegend=True,
+        ))
+
+    fig_pred.update_layout(**CHART_LAYOUT)
+    fig_pred.update_layout(
+        title="ROAS: faktisk historikk + prediksjon neste uke (★)",
+        xaxis_title="Uke",
+        yaxis_title="ROAS (x)",
+        legend=dict(orientation="h", y=-0.28, font=dict(size=10)),
+        margin=dict(t=50, b=90, l=8, r=8),
+    )
+
+    # --- Z-score anomalies ---
+    if anomalies:
+        anomaly_items = [
+            dbc.Alert(
+                [
+                    html.Span(
+                        f"z={a['z_score']:.2f}  ",
+                        className=f"badge bg-{severity_color.get(a['severity'], 'secondary')} me-2",
+                    ),
+                    html.Strong(f"[{a['client']}] {a['campaign']}: "),
+                    a["detail"],
+                ],
+                color=severity_color.get(a["severity"], "warning"),
+                className="py-2 mb-2",
+            )
+            for a in anomalies[:8]          # cap at 8 for readability
+        ]
+        anomaly_section = [
+            html.H6("🔍 Statistisk avviksdeteksjon (z-score ≥ 2.0)", className="fw-bold mt-2 mb-2"),
+            html.P(
+                "Uker der ROAS avviker ≥2 standardavvik fra kampanjens egen historikk.",
+                className="text-muted small mb-2",
+            ),
+            *anomaly_items,
+        ]
+    else:
+        anomaly_section = [
+            html.P("Ingen statistiske avvik oppdaget (z-score < 2.0 for alle kampanjer).",
+                   className="text-muted small"),
+        ]
+
+    # --- Budget reallocation ---
+    if recommendations:
+        rec_items = [
+            dbc.Alert(
+                [
+                    html.Strong(f"{r['from_channel']} → {r['to_channel']}:  "),
+                    r["summary"],
+                    html.Br(),
+                    html.Small(
+                        f"ROAS sammenligning: {r['from_roas']:.2f}x vs {r['to_roas']:.2f}x",
+                        className="text-muted",
+                    ),
+                ],
+                color="success",
+                className="py-2 mb-2",
+            )
+            for r in recommendations
+        ]
+        budget_section = [
+            html.H6("💡 Budsjettoptimalisering", className="fw-bold mt-2 mb-2"),
+            html.P(
+                "Estimert gevinst ved å flytte 20% av budsjett fra lavere- til høyere-ytende kanal.",
+                className="text-muted small mb-2",
+            ),
+            *rec_items,
+        ]
+    else:
+        budget_section = [
+            html.P("Ikke nok kanaldata for budsjettanbefalinger.", className="text-muted small"),
+        ]
+
+    return html.Div([
+        # Prediction cards
+        html.H6("📈 Forbruk & ROAS-prediksjon neste uke", className="fw-bold mb-2"),
+        dbc.Row(pred_cards),
+
+        # Prediction chart
+        dcc.Graph(figure=fig_pred, className="mb-3"),
+
+        html.Hr(),
+        *anomaly_section,
+
+        html.Hr(),
+        *budget_section,
+    ])
+
+
+@app.callback(
+    Output("ml-out", "children"),
+    Input("btn-ml", "n_clicks"),
+    State("dd-client", "value"),
+    State("dd-campaign", "value"),
+    State("dd-channel", "value"),
+    prevent_initial_call=True,
+)
+def run_ml_analysis(_, client, campaign, channel):
+    try:
+        df = apply_filters(client, campaign, channel)
+        predictions    = predict_next_week(df)
+        anomalies      = detect_anomalies_zscore(df)
+        recommendations = suggest_budget_reallocation(df)
+        return render_ml_results(predictions, anomalies, recommendations)
+    except Exception as e:
+        return dbc.Alert(f"ML-feil: {e}", color="danger")
+
+
 @app.callback(
     Output("insight-roas", "children"),
     Output("insight-conv", "children"),
@@ -932,12 +1191,7 @@ def clear_chat(_):
 )
 def update_chart_insights(client, campaign, channel):
     hints = compute_chart_insights(client, campaign, channel)
-    return (
-        hints["roas"],
-        hints["conv"],
-        hints["spend"],
-        hints["weekly"],
-    )
+    return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
 
 
 @app.callback(

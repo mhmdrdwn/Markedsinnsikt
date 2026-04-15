@@ -282,7 +282,7 @@ def build_context(
     client_filter: Optional[str] = None,
     campaign_filter: Optional[str] = None,
     channel_filter: Optional[str] = None,
-    max_rows: int = 60,
+    max_rows: int = 25,
 ) -> str:
     filtered = df.copy()
 
@@ -437,12 +437,12 @@ INSIGHT_PROMPT = textwrap.dedent("""\
 
 
 # ---------------------------------------------------------------------------
-# LLM calls
+# Provider implementations
 # ---------------------------------------------------------------------------
 
-def generate_insights(context: str, model: str = "llama-3.3-70b-versatile") -> dict:
-    groq = get_groq_client()
-    response = groq.chat.completions.create(
+def _groq_insights(context: str, model: str) -> dict:
+    client = get_groq_client()
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -450,9 +450,150 @@ def generate_insights(context: str, model: str = "llama-3.3-70b-versatile") -> d
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=1400,
+        max_tokens=900,
     )
     return json.loads(response.choices[0].message.content.strip())
+
+
+def _groq_answer(messages: list[dict], context: str, model: str) -> str:
+    client = get_groq_client()
+    system = (
+        SYSTEM_PROMPT
+        + "\n\nDu har tilgang til følgende kampanjedata. Svar basert på disse dataene. "
+        "Vær spesifikk, bruk tall, og gi handlingsrettede råd. "
+        "Hold svar under 200 ord med mindre mer er etterspurt.\n\n"
+        + context
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system}, *messages],
+        temperature=0.3,
+        max_tokens=700,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _gemini_insights(context: str) -> dict:
+    from google import genai as google_genai
+    from google.genai import types as genai_types
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    client = google_genai.Client(api_key=api_key)
+    prompt = f"{SYSTEM_PROMPT}\n\n{INSIGHT_PROMPT.format(context=context)}"
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.3,
+            max_output_tokens=900,
+        ),
+    )
+    return json.loads(response.text)
+
+
+def _gemini_answer(messages: list[dict], context: str) -> str:
+    from google import genai as google_genai
+    from google.genai import types as genai_types
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    client = google_genai.Client(api_key=api_key)
+    system = (
+        SYSTEM_PROMPT
+        + "\n\nDu har tilgang til følgende kampanjedata. Svar basert på disse dataene. "
+        "Vær spesifikk, bruk tall, og gi handlingsrettede råd. "
+        "Hold svar under 200 ord med mindre mer er etterspurt.\n\n"
+        + context
+    )
+    # Build Gemini-format history
+    history = []
+    for m in messages[:-1]:
+        history.append(
+            genai_types.Content(
+                role="user" if m["role"] == "user" else "model",
+                parts=[genai_types.Part(text=m["content"])],
+            )
+        )
+    history.append(
+        genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(text=messages[-1]["content"])],
+        )
+    )
+    response = client.models.generate_content(
+        model=model_name,
+        contents=history,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=0.3,
+            max_output_tokens=700,
+        ),
+    )
+    return response.text.strip()
+
+
+def _mistral_insights(context: str) -> dict:
+    from mistralai.client import Mistral
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not set")
+    client = Mistral(api_key=api_key)
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": INSIGHT_PROMPT.format(context=context)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+        max_tokens=900,
+    )
+    return json.loads(response.choices[0].message.content.strip())
+
+
+def _mistral_answer(messages: list[dict], context: str) -> str:
+    from mistralai.client import Mistral
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not set")
+    client = Mistral(api_key=api_key)
+    system = (
+        SYSTEM_PROMPT
+        + "\n\nDu har tilgang til følgende kampanjedata. Svar basert på disse dataene. "
+        "Vær spesifikk, bruk tall, og gi handlingsrettede råd. "
+        "Hold svar under 200 ord med mindre mer er etterspurt.\n\n"
+        + context
+    )
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "system", "content": system}, *messages],
+        temperature=0.3,
+        max_tokens=700,
+    )
+    return response.choices[0].message.content.strip()
+
+
+# ---------------------------------------------------------------------------
+# Public API — tries Groq → Gemini → Mistral automatically
+# ---------------------------------------------------------------------------
+
+def generate_insights(context: str, model: str = "llama-3.3-70b-versatile") -> dict:
+    attempts = [
+        ("Groq",    lambda: _groq_insights(context, model)),
+        ("Gemini",  lambda: _gemini_insights(context)),
+        ("Mistral", lambda: _mistral_insights(context)),
+    ]
+    last_error: Exception = RuntimeError("No AI provider configured")
+    for name, fn in attempts:
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+    raise last_error
 
 
 def answer_question(
@@ -460,19 +601,15 @@ def answer_question(
     context: str,
     model: str = "llama-3.3-70b-versatile",
 ) -> str:
-    groq = get_groq_client()
-    system = (
-        SYSTEM_PROMPT
-        + "\n\nDu har tilgang til følgende kampanjedata (inkludert mål-KPIer, "
-        "målgruppesegmenter, trender, prediksjoner og avvik). "
-        "Svar basert på disse dataene. Vær spesifikk, bruk tall, "
-        "og gi handlingsrettede råd. Hold svar under 200 ord med mindre mer er etterspurt.\n\n"
-        + context
-    )
-    response = groq.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}, *messages],
-        temperature=0.3,
-        max_tokens=700,
-    )
-    return response.choices[0].message.content.strip()
+    attempts = [
+        ("Groq",    lambda: _groq_answer(messages, context, model)),
+        ("Gemini",  lambda: _gemini_answer(messages, context)),
+        ("Mistral", lambda: _mistral_answer(messages, context)),
+    ]
+    last_error: Exception = RuntimeError("No AI provider configured")
+    for name, fn in attempts:
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+    raise last_error
