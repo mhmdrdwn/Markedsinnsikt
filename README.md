@@ -1,6 +1,23 @@
 # Markedsinnsikt AI
 
-AI-powered marketing analytics assistant for multi-client, multi-channel campaigns. Built with FastAPI, Dash, and Groq.
+Markedsinnsikt AI is a decision-support tool that transforms marketing performance data into actionable insights and recommendations across campaigns, channels, and clients.
+
+The system combines structured data with AI reasoning to help marketing teams move from reporting to action — surfacing what is happening, why it might be happening, and what to do about it.
+
+Built with Dash and Groq (llama-3.3-70b-versatile).
+
+## Features
+
+- **Multi-client filtering** — switch between clients, campaigns, and channels; all charts and insights update dynamically
+- **KPI cards** — total spend, revenue, conversions, ROAS, CTR with week-over-week trend arrows
+- **Performance charts** — ROAS by channel, conversions by campaign, spend distribution, weekly trend — each with a rule-based interpretation line
+- **Anomaly notifications** — bell icon alerts for ROAS drops ≥25% and spend spikes ≥50%
+- **AI Insights** — one-click structured analysis: summary, key insights, anomalies, and prioritised recommendations (powered by Groq)
+- **AI Assistant** — multi-turn chat with full campaign context; clickable example questions to get started
+- **Goal-aware analysis** — evaluates Brand Awareness on CPM/reach, Lead Gen on CPL, Direct Sales on ROAS, App Installs on CPI
+- **Cross-client benchmarking** — compares selected client against portfolio averages
+- **Audience segment analysis** — ranks segments by ROAS and conversions
+- **Predictive signals** — flags 3+ consecutive weeks of declining ROAS and accelerating spend
 
 ## Live demo
 
@@ -8,20 +25,11 @@ AI-powered marketing analytics assistant for multi-client, multi-channel campaig
 
 > Note: Cloudflare Tunnel URL may change on restart. Update this link if it does.
 
-## Services
-
-| Service | URL | Description |
-|---|---|---|
-| Dashboard (public) | https://compete-positioning-device-explained.trycloudflare.com | Dash frontend |
-| Dashboard (local) | http://localhost:8050 | Dash frontend |
-| API | http://localhost:8000 | FastAPI backend |
-| API Docs | http://localhost:8000/docs | Interactive API explorer |
-
 ## Running with Docker
 
 ### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose installed
+- [Docker](https://docs.docker.com/get-docker/) installed
 
 ### Setup
 
@@ -29,28 +37,17 @@ AI-powered marketing analytics assistant for multi-client, multi-channel campaig
 
    ```bash
    cp .env.example .env
-   # then edit .env and set GROQ_API_KEY=gsk_...
+   # edit .env and set GROQ_API_KEY=gsk_...
    ```
 
-2. Build and start both services:
+2. Build and start:
 
    ```bash
-   docker compose up --build
+   docker build -t markedsinnsikt .
+   docker run -p 8050:8050 --env-file .env markedsinnsikt
    ```
 
 3. Open the dashboard at **http://localhost:8050**
-
-### Stopping
-
-```bash
-docker compose down
-```
-
-### Rebuilding after code changes
-
-```bash
-docker compose up --build
-```
 
 ## Running locally (without Docker)
 
@@ -76,40 +73,38 @@ docker compose up --build
 
    ```bash
    cp .env.example .env
-   # then edit .env and set GROQ_API_KEY=gsk_...
+   # edit .env and set GROQ_API_KEY=gsk_...
    ```
 
-### Start the API (Terminal 1)
+4. Start the dashboard:
 
-```bash
-uvicorn api:app --reload
-```
+   ```bash
+   python dashboard.py
+   ```
 
-### Start the Dashboard (Terminal 2)
+   Open the dashboard at **http://localhost:8050**
 
-```bash
-python dashboard.py
-```
+## Deploying on Render
 
-Open the dashboard at **http://localhost:8050**
+1. Push the repo to GitHub
+2. Create a new Web Service on [Render](https://render.com), connect the repo
+3. Set **Language** to `Docker`
+4. Add environment variable `GROQ_API_KEY` in the Render dashboard
+5. Deploy — the app will be available at your Render URL
 
 ## Project structure
 
 ```
 .
-├── api.py            # FastAPI backend (data, KPIs, charts, AI endpoints)
-├── dashboard.py      # Dash frontend (consumes the API)
-├── ai_assistant.py   # Groq LLM integration
+├── dashboard.py      # Dash frontend (all UI, callbacks, direct function calls)
+├── ai_assistant.py   # Groq LLM integration (context builder, insights, chat)
 ├── data.py           # Synthetic dataset generator
+├── api.py            # FastAPI backend (optional — kept for API-only use)
 ├── requirements.txt
 ├── Dockerfile
-├── docker-compose.yml
 └── .env              # Groq API key (not committed)
 ```
 
-## AI features
+## Data note
 
-- **Generate Insights** — automated performance analysis across campaigns and channels
-- **Ask the AI Analyst** — free-form Q&A about your campaign data
-
-Both features require a [Groq API key](https://console.groq.com). Enter it in the sidebar or set `GROQ_API_KEY` in `.env`.
+All campaign data is synthetically generated for demonstration purposes. No real client data is used.

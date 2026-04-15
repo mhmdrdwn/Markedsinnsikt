@@ -135,6 +135,70 @@ def get_chart_weekly(client, campaign, channel) -> list:
     return df.groupby("week")["spend"].sum().reset_index().to_dict(orient="records")
 
 
+def compute_chart_insights(client, campaign, channel) -> dict:
+    """Rule-based one-liner interpretations for each chart."""
+    df = apply_filters(client, campaign, channel)
+    if df.empty:
+        return {"roas": "", "conv": "", "spend": "", "weekly": ""}
+
+    # ROAS by channel
+    ch = df.groupby("channel").agg(spend=("spend", "sum"), revenue=("revenue", "sum"))
+    ch["roas"] = ch["revenue"] / ch["spend"].replace(0, float("nan"))
+    if len(ch) >= 2:
+        best = ch["roas"].idxmax()
+        worst = ch["roas"].idxmin()
+        gap = (ch.loc[best, "roas"] - ch.loc[worst, "roas"]) / ch.loc[worst, "roas"] * 100
+        roas_txt = (
+            f"{best} leverer høyest ROAS ({ch.loc[best,'roas']:.1f}x), "
+            f"{gap:.0f}% over {worst} ({ch.loc[worst,'roas']:.1f}x). "
+            "Vurder å flytte budsjett hit."
+        )
+    else:
+        roas_txt = ""
+
+    # Conversions by campaign
+    cp = df.groupby("campaign")["conversions"].sum()
+    if len(cp) >= 2:
+        best_cp = cp.idxmax()
+        worst_cp = cp.idxmin()
+        conv_txt = (
+            f"«{best_cp}» topper med {int(cp[best_cp]):,} konverteringer. "
+            f"«{worst_cp}» henger etter ({int(cp[worst_cp]):,}) — "
+            "vurder å justere budsjett eller kreativ."
+        )
+    elif len(cp) == 1:
+        best_cp = cp.idxmax()
+        conv_txt = f"«{best_cp}»: {int(cp[best_cp]):,} konverteringer."
+    else:
+        conv_txt = ""
+
+    # Spend by channel
+    sp = df.groupby("channel")["spend"].sum()
+    if not sp.empty:
+        top = sp.idxmax()
+        share = sp[top] / sp.sum() * 100
+        spend_txt = (
+            f"{top} mottar {share:.0f}% av totalt budsjett "
+            f"(NOK {sp[top]:,.0f} av NOK {sp.sum():,.0f})."
+        )
+    else:
+        spend_txt = ""
+
+    # Weekly spend trend
+    wk = df.groupby("week")["spend"].sum().sort_index()
+    if len(wk) >= 2:
+        wow = (wk.iloc[-1] - wk.iloc[-2]) / wk.iloc[-2] * 100
+        direction = "økt" if wow >= 0 else "sunket"
+        weekly_txt = (
+            f"Forbruket har {direction} {abs(wow):.1f}% siste uke "
+            f"(NOK {wk.iloc[-2]:,.0f} → NOK {wk.iloc[-1]:,.0f})."
+        )
+    else:
+        weekly_txt = ""
+
+    return {"roas": roas_txt, "conv": conv_txt, "spend": spend_txt, "weekly": weekly_txt}
+
+
 # ---------------------------------------------------------------------------
 # Initial data for dropdowns
 # ---------------------------------------------------------------------------
@@ -297,6 +361,27 @@ chat_widget = html.Div(
                 # Loading indicator
                 dcc.Loading(html.Div(id="chat-loading"), type="dot"),
 
+                # Example questions
+                html.Div(
+                    [
+                        html.Small("Prøv:", className="text-muted me-2 fw-semibold"),
+                        dbc.Button("Beste kanal?", id="q-btn-1", size="sm",
+                                   color="outline-secondary", className="me-1 mb-1"),
+                        dbc.Button("Hva bør optimaliseres?", id="q-btn-2", size="sm",
+                                   color="outline-secondary", className="me-1 mb-1"),
+                        dbc.Button("Hvorfor lave konverteringer?", id="q-btn-3", size="sm",
+                                   color="outline-secondary", className="mb-1"),
+                    ],
+                    style={
+                        "padding": "0.5rem 0.75rem 0.25rem",
+                        "background": "#f8f9fa",
+                        "borderTop": "1px solid #dee2e6",
+                        "flexWrap": "wrap",
+                        "display": "flex",
+                        "alignItems": "center",
+                    },
+                ),
+
                 # Input row
                 html.Div(
                     [
@@ -373,35 +458,70 @@ chat_widget = html.Div(
 # Main content
 # ---------------------------------------------------------------------------
 
+def chart_insight_text(div_id: str) -> html.Div:
+    return html.Div(
+        id=div_id,
+        style={
+            "borderLeft": "3px solid #adb5bd",
+            "paddingLeft": "0.6rem",
+            "marginTop": "0.25rem",
+            "marginBottom": "0.5rem",
+            "fontSize": "0.82rem",
+            "color": "#6c757d",
+            "fontStyle": "italic",
+            "minHeight": "1.2rem",
+        },
+    )
+
+
 main = dbc.Col(
     [
         html.H2("📊 Markedsinnsikt AI", className="mt-3 mb-0"),
         html.P(
-            "KI-drevet markedsanalyseverktøy for kampanjer på tvers av kunder og kanaler.",
+            "Et beslutningsstøtteverktøy som omgjør markedsdata til handlingsrettede anbefalinger "
+            "på tvers av kampanjer, kanaler og kunder.",
             className="text-muted",
         ),
         html.Hr(),
 
-        # KPI row
+        # --- Section: Overview ---
+        html.H5("📈 Oversikt", className="fw-bold text-secondary mb-3"),
         dbc.Row(id="kpi-row", className="mb-4 g-3"),
         html.Hr(),
 
-        # Charts — row 1
-        dbc.Row([
-            dbc.Col(dcc.Graph(id="chart-roas"), md=6),
-            dbc.Col(dcc.Graph(id="chart-conv"), md=6),
-        ], className="mb-4"),
+        # --- Section: Performance ---
+        html.H5("📊 Ytelse", className="fw-bold text-secondary mb-3"),
 
-        # Charts — row 2
         dbc.Row([
-            dbc.Col(dcc.Graph(id="chart-spend-pie"), md=6),
-            dbc.Col(dcc.Graph(id="chart-weekly"), md=6),
+            dbc.Col([
+                dcc.Graph(id="chart-roas"),
+                chart_insight_text("insight-roas"),
+            ], md=6),
+            dbc.Col([
+                dcc.Graph(id="chart-conv"),
+                chart_insight_text("insight-conv"),
+            ], md=6),
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col([
+                dcc.Graph(id="chart-spend-pie"),
+                chart_insight_text("insight-spend"),
+            ], md=6),
+            dbc.Col([
+                dcc.Graph(id="chart-weekly"),
+                chart_insight_text("insight-weekly"),
+            ], md=6),
         ], className="mb-4"),
 
         html.Hr(),
 
-        # AI Insights
-        html.H4("🤖 KI-drevne ytelsesanalyser"),
+        # --- Section: AI Analysis ---
+        html.H5("🤖 KI-analyser", className="fw-bold text-secondary mb-1"),
+        html.P(
+            "Få automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger.",
+            className="text-muted small mb-3",
+        ),
         dbc.Button("Generer innsikt", id="btn-insights", color="primary", className="mb-3"),
         dcc.Loading(html.Div(id="insights-out"), type="circle"),
 
@@ -799,6 +919,41 @@ def render_messages(history):
 )
 def clear_chat(_):
     return []
+
+
+@app.callback(
+    Output("insight-roas", "children"),
+    Output("insight-conv", "children"),
+    Output("insight-spend", "children"),
+    Output("insight-weekly", "children"),
+    Input("dd-client", "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel", "value"),
+)
+def update_chart_insights(client, campaign, channel):
+    hints = compute_chart_insights(client, campaign, channel)
+    return (
+        hints["roas"],
+        hints["conv"],
+        hints["spend"],
+        hints["weekly"],
+    )
+
+
+@app.callback(
+    Output("chat-input", "value", allow_duplicate=True),
+    Input("q-btn-1", "n_clicks"),
+    Input("q-btn-2", "n_clicks"),
+    Input("q-btn-3", "n_clicks"),
+    prevent_initial_call=True,
+)
+def prefill_question(*_):
+    questions = {
+        "q-btn-1": "Hvilken kanal presterer best?",
+        "q-btn-2": "Hva bør jeg optimalisere?",
+        "q-btn-3": "Hvorfor er konverteringene lave?",
+    }
+    return questions.get(ctx.triggered_id, dash.no_update)
 
 
 if __name__ == "__main__":
