@@ -437,6 +437,29 @@ INSIGHT_PROMPT = textwrap.dedent("""\
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_json(text: str) -> dict:
+    """Parse JSON, raising a clear error if the response was truncated."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to salvage a truncated response by closing open braces/brackets
+        open_braces   = text.count("{") - text.count("}")
+        open_brackets = text.count("[") - text.count("]")
+        patched = text + ("]" * open_brackets) + ("}" * open_braces)
+        try:
+            return json.loads(patched)
+        except json.JSONDecodeError:
+            raise ValueError(
+                "AI-svaret ble avkortet (for mye data). "
+                "Prøv å filtrere til én kunde eller kanal og prøv igjen."
+            )
+
+
+# ---------------------------------------------------------------------------
 # Provider implementations
 # ---------------------------------------------------------------------------
 
@@ -450,9 +473,9 @@ def _groq_insights(context: str, model: str) -> dict:
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=900,
+        max_tokens=1500,
     )
-    return json.loads(response.choices[0].message.content.strip())
+    return _safe_json(response.choices[0].message.content)
 
 
 def _groq_answer(messages: list[dict], context: str, model: str) -> str:
@@ -488,10 +511,10 @@ def _gemini_insights(context: str) -> dict:
         config=genai_types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.3,
-            max_output_tokens=900,
+            max_output_tokens=1500,
         ),
     )
-    return json.loads(response.text)
+    return _safe_json(response.text)
 
 
 def _gemini_answer(messages: list[dict], context: str) -> str:
@@ -550,9 +573,9 @@ def _mistral_insights(context: str) -> dict:
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=900,
+        max_tokens=1500,
     )
-    return json.loads(response.choices[0].message.content.strip())
+    return _safe_json(response.choices[0].message.content)
 
 
 def _mistral_answer(messages: list[dict], context: str) -> str:

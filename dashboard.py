@@ -1,6 +1,7 @@
 """Markedsinnsikt AI — Dash dashboard (direct function calls, no HTTP layer)."""
 
 import os
+import re
 import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
@@ -9,33 +10,36 @@ import dash
 from dash import dcc, html, Input, Output, State, ctx
 import dash_bootstrap_components as dbc
 import plotly.express as px
-
 import plotly.graph_objects as go
 
 from data import generate_dataset
 from ai_assistant import (
     build_context, generate_insights, answer_question, detect_anomalies
 )
-from ml_models import predict_next_week, detect_anomalies_zscore, suggest_budget_reallocation
+from ml_models import (
+    detect_anomalies_zscore,
+    suggest_budget_reallocation,
+    predict_xgboost_with_intervals,
+    backtest_models,
+    detect_anomalies_isolation_forest,
+)
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 
-def groq_error_alert(e: Exception) -> dbc.Alert:
-    """Return a user-friendly Norwegian alert for Groq API errors."""
+def ai_error_alert(e: Exception) -> dbc.Alert:
+    """User-friendly Norwegian alert for AI provider errors."""
     msg = str(e)
     if "429" in msg or "rate_limit" in msg.lower():
-        # Try to extract the suggested wait time from the error message
-        import re
         wait = re.search(r"Please try again in ([\dmhs.]+)", msg)
         wait_str = f" Prøv igjen om ca. {wait.group(1)}." if wait else ""
         return dbc.Alert(
             [
-                html.Strong("Groq daglig grense nådd. "),
-                f"Gratis-nivået har et daglig tokengrense.{wait_str}",
+                html.Strong("Daglig tokengrense nådd. "),
+                f"Alle AI-leverandører er midlertidig utilgjengelige.{wait_str}",
                 html.Br(),
                 html.Small(
-                    "Tips: reduser filteret til én kunde/kanal for å bruke færre tokens.",
+                    "Tips: filtrer til én kunde eller kanal for å bruke færre tokens.",
                     className="text-muted",
                 ),
             ],
@@ -135,12 +139,9 @@ def get_analytics_summary(client, campaign, channel) -> dict:
 
 def get_chart_roas(client, campaign, channel) -> list:
     df = apply_filters(client, campaign, channel)
-    grouped = (
-        df.groupby("channel")
-        .apply(lambda x: round(x["revenue"].sum() / x["spend"].sum(), 2) if x["spend"].sum() > 0 else 0)
-        .reset_index(name="roas")
-    )
-    return grouped.to_dict(orient="records")
+    agg = df.groupby("channel")[["revenue", "spend"]].sum().reset_index()
+    agg["roas"] = (agg["revenue"] / agg["spend"].replace(0, float("nan"))).round(2).fillna(0)
+    return agg[["channel", "roas"]].to_dict(orient="records")
 
 
 def get_chart_conv(client, campaign, channel) -> list:
@@ -542,7 +543,7 @@ main = dbc.Col(
                                          "fontSize": "0.72rem",
                                          "fontWeight": "600",
                                          "marginRight": "0.5rem"}),
-                        html.Span("Groq · llama-3.3-70b",
+                        html.Span("Groq · Gemini · Mistral",
                                   style={"background": "rgba(255,255,255,0.08)",
                                          "color": "rgba(255,255,255,0.5)",
                                          "padding": "0.2rem 0.65rem",
@@ -587,7 +588,7 @@ main = dbc.Col(
         # ── KI-analyser ───────────────────────────────────────
         section_header("🤖", "KI-analyser"),
         html.P(
-            "Automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger — drevet av Groq.",
+            "Automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger — drevet av Groq → Gemini → Mistral.",
             className="text-muted small mb-3",
         ),
         dbc.Button("✦ Generer innsikt", id="btn-insights", color="primary", className="mb-3"),
@@ -598,8 +599,9 @@ main = dbc.Col(
         # ── Prediksjoner & ML ─────────────────────────────────
         section_header("🔮", "Prediksjoner & ML"),
         html.P(
-            "Lineær regresjon for neste ukes forbruk og ROAS · "
-            "Statistisk avviksdeteksjon (z-score) · "
+            "XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
+            "Walk-forward backtesting (LinearRegression vs XGBoost) · "
+            "Isolation Forest + z-score avviksdeteksjon · "
             "Budsjettoptimalisering basert på kanalytelse.",
             className="text-muted small mb-3",
         ),
@@ -608,7 +610,7 @@ main = dbc.Col(
 
         html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
         html.P(
-            "Markedsinnsikt AI — Bygget med Dash & Groq · Dataene er syntetiske og kun for demoformål.",
+            "Markedsinnsikt AI — Bygget med Dash, XGBoost & Groq/Gemini/Mistral · Dataene er syntetiske og kun for demoformål.",
             className="text-muted text-center small mb-5",
         ),
     ],
@@ -905,7 +907,7 @@ def generate_insights_cb(_, client, campaign, channel):
         data = generate_insights(context, model=DEFAULT_MODEL)
         return render_insights(data)
     except Exception as e:
-        return groq_error_alert(e)
+        return ai_error_alert(e)
 
 
 # ---------------------------------------------------------------------------
@@ -983,12 +985,11 @@ def send_message(_, _submit, message, history, client, campaign, channel):
     except Exception as e:
         msg = str(e)
         if "429" in msg or "rate_limit" in msg.lower():
-            import re
             wait = re.search(r"Please try again in ([\dmhs.]+)", msg)
             wait_str = f" Prøv igjen om ca. {wait.group(1)}." if wait else ""
             history.append({"role": "assistant", "content":
-                f"Groq daglig tokengrense er nådd.{wait_str} Prøv igjen senere, "
-                "eller filtrer til én kunde for å bruke færre tokens."})
+                f"Alle AI-leverandører er midlertidig utilgjengelige.{wait_str} "
+                "Prøv igjen senere, eller filtrer til én kunde for å bruke færre tokens."})
         else:
             history.append({"role": "assistant", "content": f"Beklager, noe gikk galt: {e}"})
 
@@ -1018,127 +1019,205 @@ def clear_chat(_):
     return []
 
 
-def render_ml_results(predictions: list, anomalies: list, recommendations: list) -> html.Div:
-    severity_color = {"high": "danger", "medium": "warning"}
+def _sev_color(sev: str) -> str:
+    return "danger" if sev == "high" else "warning"
 
-    # --- Prediction cards ---
-    pred_cards = []
-    for p in predictions:
-        mae_roas_str = f"±{p['mae_roas']:.2f}x" if p["mae_roas"] is not None else "–"
-        pred_cards.append(
-            dbc.Col(
-                dbc.Card([
-                    dbc.CardHeader(html.Strong(p["channel"])),
-                    dbc.CardBody([
-                        html.P([
-                            html.Span("Forbruk uke ", className="text-muted small"),
-                            html.Span(str(p["next_week"]), className="fw-bold"),
-                            html.Span(f":  NOK {p['predicted_spend']:,.0f}", className="fw-bold"),
-                        ], className="mb-1"),
-                        html.P([
-                            html.Span("ROAS: ", className="text-muted small"),
-                            html.Span(f"{p['predicted_roas']:.2f}x", className="fw-bold text-primary"),
-                        ], className="mb-1"),
-                        html.Small(
-                            f"MAE forbruk ±NOK {p['mae_spend']:,.0f}  |  MAE ROAS {mae_roas_str}",
-                            className="text-muted",
-                        ),
-                    ]),
-                ], className="shadow-sm h-100"),
-                md=4, className="mb-3",
-            )
+
+def render_ml_results(
+    xgb_results: list,
+    backtest: list,
+    zscore_anomalies: list,
+    if_anomalies: list,
+    recommendations: list,
+) -> html.Div:
+
+    # ── 1. XGBoost forecast cards ─────────────────────────────────────────
+    xgb_cards = [
+        dbc.Col(
+            dbc.Card([
+                dbc.CardHeader(html.Strong(p["channel"])),
+                dbc.CardBody([
+                    html.P([
+                        html.Span("ROAS uke ", className="text-muted small"),
+                        html.Span(str(p["next_week"]), className="fw-bold"),
+                        html.Span(f": {p['predicted_roas']:.2f}x",
+                                  className="fw-bold text-primary ms-1"),
+                    ], className="mb-1"),
+                    html.P(
+                        f"90% intervall: [{p['lower_90']:.2f}x – {p['upper_90']:.2f}x]",
+                        className="text-muted small mb-1",
+                    ),
+                    html.Small(f"Trenings-MAE: ±{p['mae']:.3f}x", className="text-muted"),
+                ]),
+            ], className="shadow-sm h-100"),
+            md=4, className="mb-3",
         )
+        for p in xgb_results
+    ]
 
-    # --- Prediction chart (actual ROAS + predicted point) ---
-    fig_pred = go.Figure()
-    for p in predictions:
-        ch = p["channel"]
+    # ── 2. XGBoost forecast chart with 90% CI error bars ─────────────────
+    fig_xgb = go.Figure()
+    for p in xgb_results:
+        ch    = p["channel"]
         color = CHANNEL_COLORS.get(ch, "#888")
-        history = p["history"]
-        weeks_h = [h["week"] for h in history]
-        roas_h  = [h["actual_roas"] for h in history]
+        weeks = [h["week"] for h in p["history"]]
+        roas  = [h["roas"]  for h in p["history"]]
 
-        fig_pred.add_trace(go.Scatter(
-            x=weeks_h, y=roas_h,
-            name=f"{ch} (faktisk)",
+        fig_xgb.add_trace(go.Scatter(
+            x=weeks, y=roas, name=f"{ch}",
             mode="lines+markers",
-            line=dict(color=color, width=2),
+            line=dict(color=color, width=2.5),
             marker=dict(size=6),
         ))
-        fig_pred.add_trace(go.Scatter(
+        fig_xgb.add_trace(go.Scatter(
             x=[p["next_week"]], y=[p["predicted_roas"]],
-            name=f"{ch} (prediksjon uke {p['next_week']})",
+            name=f"{ch} prediksjon",
             mode="markers",
-            marker=dict(symbol="star", size=16, color=color,
+            marker=dict(symbol="star", size=18, color=color,
                         line=dict(width=1, color="white")),
-            showlegend=True,
+            error_y=dict(
+                type="data", symmetric=False,
+                array=[p["upper_90"] - p["predicted_roas"]],
+                arrayminus=[p["predicted_roas"] - p["lower_90"]],
+                color=color, thickness=2, width=6,
+            ),
         ))
 
-    fig_pred.update_layout(**CHART_LAYOUT)
-    fig_pred.update_layout(
-        title="ROAS: faktisk historikk + prediksjon neste uke (★)",
-        xaxis_title="Uke",
-        yaxis_title="ROAS (x)",
+    fig_xgb.update_layout(**CHART_LAYOUT)
+    fig_xgb.update_layout(
+        title="XGBoost ROAS-prediksjon med 90% usikkerhetsintervall",
+        xaxis_title="Uke", yaxis_title="ROAS (x)",
         legend=dict(orientation="h", y=-0.28, font=dict(size=10)),
         margin=dict(t=50, b=90, l=8, r=8),
     )
 
-    # --- Z-score anomalies ---
-    if anomalies:
-        anomaly_items = [
-            dbc.Alert(
-                [
-                    html.Span(
-                        f"z={a['z_score']:.2f}  ",
-                        className=f"badge bg-{severity_color.get(a['severity'], 'secondary')} me-2",
-                    ),
-                    html.Strong(f"[{a['client']}] {a['campaign']}: "),
-                    a["detail"],
-                ],
-                color=severity_color.get(a["severity"], "warning"),
-                className="py-2 mb-2",
-            )
-            for a in anomalies[:8]          # cap at 8 for readability
+    # ── 3. Feature importance (first channel) ────────────────────────────
+    fi_section: list = []
+    if xgb_results:
+        fi   = xgb_results[0]["feature_importance"]
+        ch0  = xgb_results[0]["channel"]
+        labels = {"lag_1": "Lag 1", "lag_2": "Lag 2",
+                  "rolling_mean": "Rullende snitt", "trend": "Trend"}
+        fig_fi = px.bar(
+            x=[labels.get(k, k) for k in fi],
+            y=list(fi.values()),
+            title=f"XGBoost feature importance — {ch0}",
+            labels={"x": "Feature", "y": "Vekt"},
+            color_discrete_sequence=["#3b82f6"],
+        )
+        fig_fi.update_layout(**CHART_LAYOUT)
+        fi_section = [dcc.Graph(figure=fig_fi)]
+
+    # ── 4. Backtesting table ──────────────────────────────────────────────
+    if backtest:
+        bt_rows = [
+            html.Tr([
+                html.Td(r["channel"]),
+                html.Td(f"{r['lr_mae']:.3f}"),
+                html.Td(f"{r['xgb_mae']:.3f}"),
+                html.Td(f"{r['lr_rmse']:.3f}"),
+                html.Td(f"{r['xgb_rmse']:.3f}"),
+                html.Td(html.Span(
+                    r["winner"],
+                    className=f"badge bg-{'success' if 'XGBoost' in r['winner'] else 'secondary'}",
+                )),
+                html.Td(f"{r['improvement_pct']:+.1f}%"),
+            ])
+            for r in backtest
         ]
-        anomaly_section = [
-            html.H6("🔍 Statistisk avviksdeteksjon (z-score ≥ 2.0)", className="fw-bold mt-2 mb-2"),
+        bt_table = dbc.Table(
+            [
+                html.Thead(html.Tr([
+                    html.Th("Kanal"), html.Th("Lin. MAE"), html.Th("XGB MAE"),
+                    html.Th("Lin. RMSE"), html.Th("XGB RMSE"),
+                    html.Th("Vinner"), html.Th("Forbedring"),
+                ])),
+                html.Tbody(bt_rows),
+            ],
+            bordered=True, hover=True, responsive=True, size="sm",
+            className="mb-3",
+        )
+
+        # Backtesting chart — one tab per channel
+        bt_tabs = dbc.Tabs([
+            dbc.Tab(
+                dcc.Graph(figure=_make_backtest_fig(r)),
+                label=r["channel"],
+                tab_id=f"bt-{r['channel'].replace(' ', '-')}",
+            )
+            for r in backtest
+        ], active_tab=f"bt-{backtest[0]['channel'].replace(' ', '-')}")
+
+        backtest_section = [
+            html.H6("📊 Backtesting — walk-forward validering", className="fw-bold mt-3 mb-1"),
             html.P(
-                "Uker der ROAS avviker ≥2 standardavvik fra kampanjens egen historikk.",
+                "Trener på t=1..k, predikerer uke k+1 for hvert steg. "
+                "Sammenligner Lineær regresjon vs XGBoost.",
                 className="text-muted small mb-2",
             ),
-            *anomaly_items,
+            bt_table,
+            bt_tabs,
         ]
     else:
-        anomaly_section = [
-            html.P("Ingen statistiske avvik oppdaget (z-score < 2.0 for alle kampanjer).",
+        backtest_section = [
+            html.P("For lite data for backtesting (trenger ≥5 uker per kanal).",
                    className="text-muted small"),
         ]
 
-    # --- Budget reallocation ---
+    # ── 5. Anomaly detection (z-score + Isolation Forest) ────────────────
+    def anomaly_card(a: dict) -> dbc.Alert:
+        method_badge = html.Span(
+            a.get("method", ""),
+            className="badge bg-secondary me-2",
+        )
+        score_badge = (
+            html.Span(f"z={a['z_score']:.2f}", className=f"badge bg-{_sev_color(a['severity'])} me-2")
+            if "z_score" in a else
+            html.Span(f"IF={a['anomaly_score']:.3f}", className=f"badge bg-{_sev_color(a['severity'])} me-2")
+        )
+        return dbc.Alert(
+            [method_badge, score_badge,
+             html.Strong(f"[{a['client']}] {a['campaign']}: "),
+             a["detail"]],
+            color=_sev_color(a["severity"]),
+            className="py-2 mb-2",
+        )
+
+    all_anomalies = zscore_anomalies[:6] + if_anomalies[:6]
+    anomaly_section = [
+        html.H6("🔍 Avviksdeteksjon: Z-score + Isolation Forest",
+                className="fw-bold mt-3 mb-1"),
+        html.P(
+            f"Z-score flagget {len(zscore_anomalies)} avvik · "
+            f"Isolation Forest flagget {len(if_anomalies)} avvik "
+            "(multidimensjonalt: spend + ROAS + CTR samtidig).",
+            className="text-muted small mb-2",
+        ),
+    ] + (
+        [anomaly_card(a) for a in all_anomalies]
+        if all_anomalies else
+        [html.P("Ingen avvik oppdaget.", className="text-muted small")]
+    )
+
+    # ── 6. Budget reallocation ────────────────────────────────────────────
     if recommendations:
-        rec_items = [
-            dbc.Alert(
-                [
-                    html.Strong(f"{r['from_channel']} → {r['to_channel']}:  "),
-                    r["summary"],
-                    html.Br(),
-                    html.Small(
-                        f"ROAS sammenligning: {r['from_roas']:.2f}x vs {r['to_roas']:.2f}x",
-                        className="text-muted",
-                    ),
-                ],
-                color="success",
-                className="py-2 mb-2",
-            )
-            for r in recommendations
-        ]
         budget_section = [
-            html.H6("💡 Budsjettoptimalisering", className="fw-bold mt-2 mb-2"),
+            html.H6("💡 Budsjettoptimalisering", className="fw-bold mt-3 mb-1"),
             html.P(
                 "Estimert gevinst ved å flytte 20% av budsjett fra lavere- til høyere-ytende kanal.",
                 className="text-muted small mb-2",
             ),
-            *rec_items,
+            *[
+                dbc.Alert([
+                    html.Strong(f"{r['from_channel']} → {r['to_channel']}:  "),
+                    r["summary"], html.Br(),
+                    html.Small(
+                        f"ROAS: {r['from_roas']:.2f}x → {r['to_roas']:.2f}x",
+                        className="text-muted",
+                    ),
+                ], color="success", className="py-2 mb-2")
+                for r in recommendations
+            ],
         ]
     else:
         budget_section = [
@@ -1146,12 +1225,13 @@ def render_ml_results(predictions: list, anomalies: list, recommendations: list)
         ]
 
     return html.Div([
-        # Prediction cards
-        html.H6("📈 Forbruk & ROAS-prediksjon neste uke", className="fw-bold mb-2"),
-        dbc.Row(pred_cards),
+        section_header("🔮", "XGBoost-prediksjon neste uke"),
+        dbc.Row(xgb_cards),
+        html.Div(dcc.Graph(figure=fig_xgb), className="chart-wrapper mb-3"),
+        *fi_section,
 
-        # Prediction chart
-        dcc.Graph(figure=fig_pred, className="mb-3"),
+        html.Hr(),
+        *backtest_section,
 
         html.Hr(),
         *anomaly_section,
@@ -1159,6 +1239,44 @@ def render_ml_results(predictions: list, anomalies: list, recommendations: list)
         html.Hr(),
         *budget_section,
     ])
+
+
+def _make_backtest_fig(r: dict) -> go.Figure:
+    """Line chart for one channel's walk-forward backtest results."""
+    data = r["backtest_data"]
+    weeks = [d["week"]   for d in data]
+    act   = [d["actual"] for d in data]
+    lr    = [d["lr"]     for d in data]
+    xgb   = [d["xgb"]   for d in data]
+
+    ch    = r["channel"]
+    color = CHANNEL_COLORS.get(ch, "#888")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=weeks, y=act, name="Faktisk",
+        mode="lines+markers", line=dict(color=color, width=2.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=weeks, y=lr, name="Lineær reg.",
+        mode="lines+markers",
+        line=dict(color="#94a3b8", width=1.5, dash="dot"),
+        marker=dict(size=5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=weeks, y=xgb, name="XGBoost",
+        mode="lines+markers",
+        line=dict(color="#10b981", width=1.5, dash="dash"),
+        marker=dict(size=5),
+    ))
+    fig.update_layout(**CHART_LAYOUT)
+    fig.update_layout(
+        title=f"Backtesting: {ch} — MAE lin={r['lr_mae']:.3f} xgb={r['xgb_mae']:.3f}",
+        xaxis_title="Uke", yaxis_title="ROAS (x)",
+        legend=dict(orientation="h", y=-0.28, font=dict(size=10)),
+        margin=dict(t=50, b=80, l=8, r=8),
+    )
+    return fig
 
 
 @app.callback(
@@ -1172,10 +1290,12 @@ def render_ml_results(predictions: list, anomalies: list, recommendations: list)
 def run_ml_analysis(_, client, campaign, channel):
     try:
         df = apply_filters(client, campaign, channel)
-        predictions    = predict_next_week(df)
-        anomalies      = detect_anomalies_zscore(df)
-        recommendations = suggest_budget_reallocation(df)
-        return render_ml_results(predictions, anomalies, recommendations)
+        xgb_results  = predict_xgboost_with_intervals(df)
+        bt           = backtest_models(df)
+        z_anomalies  = detect_anomalies_zscore(df)
+        if_anomalies = detect_anomalies_isolation_forest(df)
+        recs         = suggest_budget_reallocation(df)
+        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, recs)
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger")
 
