@@ -1,14 +1,19 @@
-"""Markedsinnsikt AI — Dash dashboard (consumes FastAPI backend)."""
+"""Markedsinnsikt AI — Dash dashboard (direct function calls, no HTTP layer)."""
 
 import os
+import pandas as pd
+from dotenv import load_dotenv
+load_dotenv()
 
-import requests
 import dash
 from dash import dcc, html, Input, Output, State, ctx
 import dash_bootstrap_components as dbc
 import plotly.express as px
 
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+from data import generate_dataset
+from ai_assistant import (
+    build_context, generate_insights, answer_question, detect_anomalies
+)
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
@@ -18,21 +23,116 @@ CHANNEL_COLORS = {
     "TikTok Ads": "#69C9D0",
 }
 
-
 # ---------------------------------------------------------------------------
-# Helpers
+# Data layer (direct calls — no HTTP)
 # ---------------------------------------------------------------------------
 
-def api_get(path: str, **params) -> dict:
-    resp = requests.get(f"{API_URL}{path}", params=params, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+_df: pd.DataFrame | None = None
+
+def get_df() -> pd.DataFrame:
+    global _df
+    if _df is None:
+        _df = generate_dataset()
+    return _df
 
 
-def api_post(path: str, body: dict) -> dict:
-    resp = requests.post(f"{API_URL}{path}", json=body, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
+def apply_filters(client="All", campaign="All", channel="All") -> pd.DataFrame:
+    df = get_df().copy()
+    if client and client != "All":
+        df = df[df["client"] == client]
+    if campaign and campaign != "All":
+        df = df[df["campaign"] == campaign]
+    if channel and channel != "All":
+        df = df[df["channel"] == channel]
+    return df
+
+
+def get_filters_data(client="All") -> dict:
+    df = get_df()
+    filtered = df if client == "All" else df[df["client"] == client]
+    return {
+        "clients":   ["All"] + sorted(df["client"].unique().tolist()),
+        "campaigns": ["All"] + sorted(filtered["campaign"].unique().tolist()),
+        "channels":  ["All"] + sorted(df["channel"].unique().tolist()),
+    }
+
+
+def get_kpis_data(client, campaign, channel) -> dict:
+    df = apply_filters(client, campaign, channel)
+    total_spend       = df["spend"].sum()
+    total_revenue     = df["revenue"].sum()
+    total_conversions = int(df["conversions"].sum())
+    total_clicks      = df["clicks"].sum()
+    total_impressions = df["impressions"].sum()
+    avg_roas = total_revenue / total_spend if total_spend > 0 else 0
+    avg_ctr  = total_clicks / total_impressions * 100 if total_impressions > 0 else 0
+    return {
+        "total_spend": round(total_spend, 2),
+        "total_revenue": round(total_revenue, 2),
+        "total_conversions": total_conversions,
+        "avg_roas": round(avg_roas, 2),
+        "avg_ctr": round(avg_ctr, 2),
+        "row_count": len(df),
+    }
+
+
+def get_analytics_summary(client, campaign, channel) -> dict:
+    df = apply_filters(client, campaign, channel)
+    weekly = (
+        df.groupby("week")
+        .agg(spend=("spend", "sum"), revenue=("revenue", "sum"),
+             conversions=("conversions", "sum"), clicks=("clicks", "sum"),
+             impressions=("impressions", "sum"))
+        .sort_index()
+    )
+    weekly["roas"] = weekly["revenue"] / weekly["spend"].replace(0, float("nan"))
+    weekly["ctr"]  = weekly["clicks"]  / weekly["impressions"].replace(0, float("nan")) * 100
+
+    def wow(series):
+        clean = series.dropna()
+        if len(clean) < 2 or clean.iloc[-2] == 0:
+            return None
+        return round((clean.iloc[-1] - clean.iloc[-2]) / abs(clean.iloc[-2]) * 100, 1)
+
+    return {
+        "trends": {
+            "spend_wow":       wow(weekly["spend"]),
+            "revenue_wow":     wow(weekly["revenue"]),
+            "conversions_wow": wow(weekly["conversions"]),
+            "roas_wow":        wow(weekly["roas"]),
+            "ctr_wow":         wow(weekly["ctr"]),
+        },
+        "anomalies": detect_anomalies(df),
+    }
+
+
+def get_chart_roas(client, campaign, channel) -> list:
+    df = apply_filters(client, campaign, channel)
+    grouped = (
+        df.groupby("channel")
+        .apply(lambda x: round(x["revenue"].sum() / x["spend"].sum(), 2) if x["spend"].sum() > 0 else 0)
+        .reset_index(name="roas")
+    )
+    return grouped.to_dict(orient="records")
+
+
+def get_chart_conv(client, campaign, channel) -> list:
+    df = apply_filters(client, campaign, channel)
+    return (
+        df.groupby("campaign")["conversions"]
+        .sum().reset_index().sort_values("conversions")
+        .to_dict(orient="records")
+    )
+
+
+def get_chart_spend(client, campaign, channel) -> list:
+    df = apply_filters(client, campaign, channel)
+    return df.groupby("channel")["spend"].sum().reset_index().to_dict(orient="records")
+
+
+def get_chart_weekly(client, campaign, channel) -> list:
+    df = apply_filters(client, campaign, channel)
+    return df.groupby("week")["spend"].sum().reset_index().to_dict(orient="records")
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +484,7 @@ app.layout = dbc.Container(
     Input("init-trigger", "n_intervals"),
 )
 def load_filters(_):
-    data = api_get("/filters")
+    data = get_filters_data()
     client_opts  = [{"label": c, "value": c} for c in data["clients"]]
     channel_opts = [{"label": c, "value": c} for c in data["channels"]]
     return client_opts, "All", channel_opts, "All"
@@ -396,7 +496,7 @@ def load_filters(_):
     Input("dd-client", "value"),
 )
 def update_campaign_options(client):
-    data = api_get("/filters", client=client)
+    data = get_filters_data(client)
     options = [{"label": c, "value": c} for c in data["campaigns"]]
     return options, "All"
 
@@ -412,9 +512,8 @@ def update_campaign_options(client):
     Input("dd-channel", "value"),
 )
 def update_kpis(client, campaign, channel):
-    params    = dict(client=client, campaign=campaign, channel=channel)
-    data      = api_get("/kpis", **params)
-    summary   = api_get("/analytics/summary", **params)
+    data      = get_kpis_data(client, campaign, channel)
+    summary   = get_analytics_summary(client, campaign, channel)
     trends    = summary.get("trends", {})
     anomalies = summary.get("anomalies", [])
 
@@ -482,12 +581,10 @@ def toggle_notif_modal(_, _close, is_open):
     Input("dd-channel", "value"),
 )
 def update_charts(client, campaign, channel):
-    params = dict(client=client, campaign=campaign, channel=channel)
-
-    roas_data = api_get("/charts/roas-by-channel", **params)
-    conv_data = api_get("/charts/conversions-by-campaign", **params)
-    spend_data = api_get("/charts/spend-by-channel", **params)
-    weekly_data = api_get("/charts/weekly-spend", **params)
+    roas_data   = get_chart_roas(client, campaign, channel)
+    conv_data   = get_chart_conv(client, campaign, channel)
+    spend_data  = get_chart_spend(client, campaign, channel)
+    weekly_data = get_chart_weekly(client, campaign, channel)
 
     fig_roas = px.bar(
         roas_data,
@@ -596,12 +693,8 @@ def render_insights(data: dict) -> html.Div:
 )
 def generate_insights_cb(_, client, campaign, channel):
     try:
-        data = api_post("/ai/insights", {
-            "client": client,
-            "campaign": campaign,
-            "channel": channel,
-            "model": DEFAULT_MODEL,
-        })
+        context = build_context(get_df(), client, campaign, channel)
+        data = generate_insights(context, model=DEFAULT_MODEL)
         return render_insights(data)
     except Exception as e:
         return dbc.Alert(f"Feil: {e}", color="danger")
@@ -641,17 +734,16 @@ def auto_greet(panel_style, history, client, campaign, channel):
     if history:
         return dash.no_update, None
     try:
-        data = api_post("/ai/ask", {
-            "messages": [{"role": "user", "content": (
+        context = build_context(get_df(), client, campaign, channel)
+        greeting = answer_question(
+            [{"role": "user", "content": (
                 "Gi meg en kort velkomstmelding på 2 setninger basert på dataene du ser nå. "
                 "Nevn det viktigste tallet eller trenden, og spør hva jeg ønsker å analysere."
             )}],
-            "client": client,
-            "campaign": campaign,
-            "channel": channel,
-            "model": DEFAULT_MODEL,
-        })
-        return [{"role": "assistant", "content": data["answer"]}], None
+            context,
+            model=DEFAULT_MODEL,
+        )
+        return [{"role": "assistant", "content": greeting}], None
     except Exception:
         return dash.no_update, None
 
@@ -677,14 +769,9 @@ def send_message(_, _submit, message, history, client, campaign, channel):
     history.append({"role": "user", "content": message.strip()})
 
     try:
-        data = api_post("/ai/ask", {
-            "messages": history,   # full history — enables multi-turn context
-            "client": client,
-            "campaign": campaign,
-            "channel": channel,
-            "model": DEFAULT_MODEL,
-        })
-        history.append({"role": "assistant", "content": data["answer"]})
+        context = build_context(get_df(), client, campaign, channel)
+        reply = answer_question(history, context, model=DEFAULT_MODEL)
+        history.append({"role": "assistant", "content": reply})
     except Exception as e:
         history.append({"role": "assistant", "content": f"Beklager, noe gikk galt: {e}"})
 

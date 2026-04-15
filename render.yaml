@@ -1,23 +1,9 @@
 services:
   - type: web
-    name: markedsinnsikt-api
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: GROQ_API_KEY
-        sync: false  # set manually in Render dashboard
-
-  - type: web
     name: markedsinnsikt-dashboard
     runtime: docker
     dockerfilePath: ./Dockerfile
     startCommand: python dashboard.py
     envVars:
-      - key: API_URL
-        value: https://markedsinnsikt-api.onrender.com
-      - key: PORT
-        fromService:
-          type: web
-          name: markedsinnsikt-dashboard
-          property: port
+      - key: GROQ_API_KEY
+        sync: false  # set manually in Render dashboard
