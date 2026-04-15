@@ -561,6 +561,14 @@ main = dbc.Col(
         section_header("📈", "Oversikt"),
         dbc.Row(id="kpi-row", className="mb-4 g-3"),
 
+        # ── AI Innsikt (auto, fires on filter change) ─────────
+        section_header("🧠", "AI Innsikt"),
+        html.P(
+            "Drevet av Groq → Gemini → Mistral. Oppdateres automatisk når filtre endres.",
+            className="text-muted small mb-3",
+        ),
+        dcc.Loading(html.Div(id="live-insights-panel", className="mb-4"), type="circle"),
+
         # ── Ytelse ────────────────────────────────────────────
         section_header("📊", "Ytelse"),
 
@@ -586,27 +594,15 @@ main = dbc.Col(
             ], md=6),
         ], className="mb-3"),
 
-        # ── KI-analyser ───────────────────────────────────────
-        section_header("🤖", "KI-analyser"),
+        # ── Avansert ML-analyse (optional) ────────────────────
+        section_header("🔮", "Avansert ML-analyse"),
         html.P(
-            "Automatisk analyse av kampanjeytelse, avvik og prioriterte anbefalinger — drevet av Groq → Gemini → Mistral.",
-            className="text-muted small mb-3",
-        ),
-        dbc.Button("✦ Generer innsikt", id="btn-insights", color="primary", className="mb-3"),
-        dcc.Loading(html.Div(id="insights-out"), type="circle"),
-
-        html.Br(),
-
-        # ── Prediksjoner & ML ─────────────────────────────────
-        section_header("🔮", "Prediksjoner & ML"),
-        html.P(
-            "XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
+            "Valgfritt: XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
             "Walk-forward backtesting (LinearRegression vs XGBoost) · "
-            "Isolation Forest + z-score avviksdeteksjon · "
-            "Budsjettoptimalisering basert på kanalytelse.",
+            "Isolation Forest + z-score avviksdeteksjon.",
             className="text-muted small mb-3",
         ),
-        dbc.Button("✦ Kjør ML-analyse", id="btn-ml", color="success", className="mb-3"),
+        dbc.Button("✦ Kjør avansert ML-analyse", id="btn-ml", color="outline-success", className="mb-3"),
         dcc.Loading(html.Div(id="ml-out"), type="circle"),
 
         html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
@@ -894,21 +890,6 @@ def render_insights(data: dict) -> html.Div:
     ])
 
 
-@app.callback(
-    Output("insights-out", "children"),
-    Input("btn-insights", "n_clicks"),
-    State("dd-client", "value"),
-    State("dd-campaign", "value"),
-    State("dd-channel", "value"),
-    prevent_initial_call=True,
-)
-def generate_insights_cb(_, client, campaign, channel):
-    try:
-        context = build_context(get_df(), client, campaign, channel)
-        data = generate_insights(context, model=DEFAULT_MODEL)
-        return render_insights(data)
-    except Exception as e:
-        return ai_error_alert(e)
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1294,21 @@ def run_ml_analysis(_, client, campaign, channel):
 def update_chart_insights(client, campaign, channel):
     hints = compute_chart_insights(client, campaign, channel)
     return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
+
+
+@app.callback(
+    Output("live-insights-panel", "children"),
+    Input("dd-client", "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel", "value"),
+)
+def update_live_insights(client, campaign, channel):
+    try:
+        context = build_context(get_df(), client, campaign, channel)
+        data = generate_insights(context, model=DEFAULT_MODEL)
+        return render_insights(data)
+    except Exception as e:
+        return ai_error_alert(e)
 
 
 @app.callback(
