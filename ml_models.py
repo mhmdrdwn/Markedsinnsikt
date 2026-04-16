@@ -232,6 +232,9 @@ def predict_xgboost_with_intervals(
         weekly["roas"] = weekly["revenue"] / weekly["spend"].replace(0, float("nan"))
         roas_filled = weekly["roas"].fillna(weekly["roas"].mean())
 
+        # Build week → date mapping from raw data
+        week_date_map = grp.groupby("week")["week_date"].first()
+
         if len(roas_filled) < n_lags + 2:
             continue
 
@@ -275,14 +278,24 @@ def predict_xgboost_with_intervals(
         shap_local  = dict(zip(feat_names, shap_next.tolist()))
         base_value  = float(explainer.expected_value)
 
+        # Compute next week's calendar date (+7 days from last known date)
+        from datetime import timedelta
+        last_date = pd.to_datetime(week_date_map.iloc[-1])
+        next_date = (last_date + timedelta(weeks=1)).strftime("%Y-%m-%d")
+
         history = [
-            {"week": int(w), "roas": round(float(r), 2) if pd.notna(r) else None}
+            {
+                "week":      int(w),
+                "week_date": week_date_map.get(w, ""),
+                "roas":      round(float(r), 2) if pd.notna(r) else None,
+            }
             for w, r in zip(weekly.index, weekly["roas"])
         ]
 
         results.append({
             "channel":        ch,
             "next_week":      int(weekly.index[-1]) + 1,
+            "next_date":      next_date,
             "predicted_roas": round(max(pred, 0), 2),
             "lower_90":       round(lower, 2),
             "upper_90":       round(upper, 2),

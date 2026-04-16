@@ -81,14 +81,14 @@ def _channel_multipliers(channel: str) -> dict:
 def generate_dataset() -> pd.DataFrame:
     random.seed(_SEED)
     rows = []
-    start_date = date(2025, 9, 1)
+    start_date = date(2026, 2, 1)  # Data from 1 Feb → last week before forecast
 
     for client in CLIENTS:
         campaigns = CAMPAIGNS[client]
         for campaign in campaigns:
             n_channels = random.randint(2, 3)
             channels = random.sample(CHANNELS, n_channels)
-            n_weeks = random.randint(5, 9)
+            n_weeks = 11  # 11 weeks: 1 Feb – 12 Apr 2026; forecast lands on 19 Apr
             goal = random.choice(GOALS)
             audience = random.choice(AUDIENCES)
             ad_text = random.choice(AD_TEXTS)

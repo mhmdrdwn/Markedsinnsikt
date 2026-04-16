@@ -28,6 +28,11 @@ from ml_models import (
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 
+def fmt_nok(value: float) -> str:
+    """Norwegian number format: NOK 1 234 (space as thousands separator)."""
+    return f"NOK {value:,.0f}".replace(",", "\u202f")
+
+
 def ai_error_alert(e: Exception) -> dbc.Alert:
     """User-friendly Norwegian alert for AI provider errors."""
     msg = str(e)
@@ -211,7 +216,13 @@ def get_chart_spend(client, campaign, channel) -> list:
 
 def get_chart_weekly(client, campaign, channel) -> list:
     df = apply_filters(client, campaign, channel)
-    return df.groupby("week")["spend"].sum().reset_index().to_dict(orient="records")
+    return (
+        df.groupby("week_date")["spend"]
+        .sum()
+        .reset_index()
+        .sort_values("week_date")
+        .to_dict(orient="records")
+    )
 
 
 def compute_chart_insights(client, campaign, channel) -> dict:
@@ -388,13 +399,22 @@ sidebar = dbc.Col(
         # Filters label
         html.Div(html.Span("Filtre"), className="section-label"),
 
-        dbc.Label("Kunde", className="fw-semibold text-muted small mb-1"),
+        html.Div([
+            dbc.Label("Kunde", className="fw-semibold text-muted small mb-1"),
+            html.Span(id="dot-client", style={"marginLeft": "0.4rem"}),
+        ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-client", options=[], value="All", clearable=False, className="mb-3"),
 
-        dbc.Label("Kampanje", className="fw-semibold text-muted small mb-1"),
+        html.Div([
+            dbc.Label("Kampanje", className="fw-semibold text-muted small mb-1"),
+            html.Span(id="dot-campaign", style={"marginLeft": "0.4rem"}),
+        ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-campaign", options=[], value="All", clearable=False, className="mb-3"),
 
-        dbc.Label("Kanal", className="fw-semibold text-muted small mb-1"),
+        html.Div([
+            dbc.Label("Kanal", className="fw-semibold text-muted small mb-1"),
+            html.Span(id="dot-channel", style={"marginLeft": "0.4rem"}),
+        ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-channel", options=[], value="All", clearable=False, className="mb-3"),
 
         dcc.Interval(id="init-trigger", interval=300, max_intervals=1),
@@ -716,6 +736,8 @@ anomaly_notification = html.Div(
         # Track last-run filters per tab to avoid redundant re-runs
         dcc.Store(id="insights-last-filters", data=None),
         dcc.Store(id="ml-last-filters", data=None),
+        # Cache ML results so AI tab can read without recomputing
+        dcc.Store(id="ml-results-store", data=None),
     ]
 )
 
@@ -812,8 +834,8 @@ def update_kpis(client, campaign, channel):
     )
 
     cards = [
-        kpi_card("Totalt forbruk", f"NOK {data['total_spend']:,.0f}",  trends.get("spend_wow"),       "kpi-card-amber"),
-        kpi_card("Total inntekt",  f"NOK {data['total_revenue']:,.0f}", trends.get("revenue_wow"),     "kpi-card-green"),
+        kpi_card("Totalt forbruk", fmt_nok(data['total_spend']),        trends.get("spend_wow"),       "kpi-card-amber"),
+        kpi_card("Total inntekt",  fmt_nok(data['total_revenue']),      trends.get("revenue_wow"),     "kpi-card-green"),
         kpi_card("Konverteringer", f"{data['total_conversions']:,}",    trends.get("conversions_wow"), "kpi-card-blue"),
         kpi_card("Gj.snitt ROAS",  f"{data['avg_roas']:.2f}x",         trends.get("roas_wow"),        "kpi-card-purple"),
         kpi_card("Gj.snitt CTR",   f"{data['avg_ctr']:.2f}%",          trends.get("ctr_wow"),         "kpi-card-teal"),
@@ -866,6 +888,16 @@ def toggle_notif_modal(_, _close, is_open):
     return not is_open
 
 
+def _empty_fig(msg: str = "Ingen data for dette utvalget") -> go.Figure:
+    fig = go.Figure()
+    fig.add_annotation(text=msg, xref="paper", yref="paper",
+                       x=0.5, y=0.5, showarrow=False,
+                       font=dict(size=13, color="#94a3b8"))
+    fig.update_layout(**{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return fig
+
+
 @app.callback(
     Output("chart-roas", "figure"),
     Output("chart-conv", "figure"),
@@ -881,53 +913,75 @@ def update_charts(client, campaign, channel):
     spend_data  = get_chart_spend(client, campaign, channel)
     weekly_data = get_chart_weekly(client, campaign, channel)
 
-    fig_roas = px.bar(
-        roas_data,
-        x="channel", y="roas",
-        color="channel",
-        color_discrete_map=CHANNEL_COLORS,
-        text_auto=".2f",
-        title="ROAS per kanal",
-        labels={"roas": "ROAS (x)", "channel": ""},
-    )
-    fig_roas.update_traces(textposition="outside", marker_line_width=0)
-    fig_roas.update_layout(**CHART_LAYOUT, showlegend=False)
+    # ── ROAS per kanal ───────────────────────────────────────────────────
+    if not roas_data:
+        fig_roas = _empty_fig()
+    else:
+        avg_roas = sum(r["roas"] for r in roas_data) / len(roas_data)
+        fig_roas = px.bar(
+            roas_data, x="channel", y="roas",
+            color="channel", color_discrete_map=CHANNEL_COLORS,
+            text_auto=".2f", title="ROAS per kanal",
+            labels={"roas": "ROAS (x)", "channel": ""},
+        )
+        fig_roas.update_traces(
+            textposition="outside", marker_line_width=0,
+            hovertemplate="<b>%{x}</b><br>ROAS: %{y:.2f}x<extra></extra>",
+        )
+        fig_roas.add_hline(y=avg_roas, line_dash="dot", line_color="#94a3b8",
+                           annotation_text=f"Snitt {avg_roas:.2f}x",
+                           annotation_position="top right",
+                           annotation_font=dict(size=10, color="#94a3b8"))
+        fig_roas.update_layout(**CHART_LAYOUT, showlegend=False)
 
-    fig_conv = px.bar(
-        conv_data,
-        x="conversions", y="campaign",
-        orientation="h",
-        text_auto=True,
-        title="Konverteringer per kampanje",
-        labels={"conversions": "Konverteringer", "campaign": ""},
-        color="conversions",
-        color_continuous_scale="Blues",
-    )
-    fig_conv.update_layout(**CHART_LAYOUT, coloraxis_showscale=False)
+    # ── Konverteringer per kampanje ──────────────────────────────────────
+    if not conv_data:
+        fig_conv = _empty_fig()
+    else:
+        fig_conv = px.bar(
+            conv_data, x="conversions", y="campaign",
+            orientation="h", text_auto=True,
+            title="Konverteringer per kampanje",
+            labels={"conversions": "Konverteringer", "campaign": ""},
+            color="conversions", color_continuous_scale="Blues",
+        )
+        fig_conv.update_traces(
+            hovertemplate="<b>%{y}</b><br>Konverteringer: %{x:,}<extra></extra>",
+        )
+        fig_conv.update_layout(**CHART_LAYOUT, coloraxis_showscale=False)
 
-    fig_spend = px.pie(
-        spend_data,
-        names="channel", values="spend",
-        color="channel",
-        color_discrete_map=CHANNEL_COLORS,
-        title="Forbruk per kanal",
-        hole=0.38,
-    )
-    fig_spend.update_traces(textposition="inside", textinfo="percent+label",
-                            marker=dict(line=dict(color="white", width=2)))
-    fig_spend.update_layout(**{k: v for k, v in CHART_LAYOUT.items()
-                               if k not in ("xaxis", "yaxis")})
+    # ── Forbruk per kanal ────────────────────────────────────────────────
+    if not spend_data:
+        fig_spend = _empty_fig()
+    else:
+        fig_spend = px.pie(
+            spend_data, names="channel", values="spend",
+            color="channel", color_discrete_map=CHANNEL_COLORS,
+            title="Forbruk per kanal", hole=0.38,
+        )
+        fig_spend.update_traces(
+            textposition="inside", textinfo="percent+label",
+            marker=dict(line=dict(color="white", width=2)),
+            hovertemplate="<b>%{label}</b><br>Forbruk: NOK %{value:,.0f}<br>Andel: %{percent}<extra></extra>",
+        )
+        fig_spend.update_layout(**{k: v for k, v in CHART_LAYOUT.items()
+                                   if k not in ("xaxis", "yaxis")})
 
-    fig_weekly = px.line(
-        weekly_data,
-        x="week", y="spend",
-        markers=True,
-        title="Ukentlig forbrukstrend",
-        labels={"spend": "Forbruk (NOK)", "week": "Uke"},
-        color_discrete_sequence=["#3b82f6"],
-    )
-    fig_weekly.update_traces(line=dict(width=2.5), marker=dict(size=7))
-    fig_weekly.update_layout(**CHART_LAYOUT)
+    # ── Ukentlig forbrukstrend ───────────────────────────────────────────
+    if not weekly_data:
+        fig_weekly = _empty_fig()
+    else:
+        fig_weekly = px.line(
+            weekly_data, x="week_date", y="spend",
+            markers=True, title="Ukentlig forbrukstrend",
+            labels={"spend": "Forbruk (NOK)", "week_date": "Dato"},
+            color_discrete_sequence=["#3b82f6"],
+        )
+        fig_weekly.update_traces(
+            line=dict(width=2.5), marker=dict(size=7),
+            hovertemplate="%{x|%d %b %Y}<br>Forbruk: NOK %{y:,.0f}<extra></extra>",
+        )
+        fig_weekly.update_layout(**CHART_LAYOUT)
 
     return fig_roas, fig_conv, fig_spend, fig_weekly
 
@@ -994,7 +1048,7 @@ def _render_unified_action_plan(ai_recs: list, ml_recs: list, impacts: list) -> 
             "badge":  pri.upper(),
             "color":  {"high": "danger", "medium": "warning", "low": "success"}.get(pri, "secondary"),
             "action": r.get("action", ""),
-            "detail": f"Mål: {r.get('target', '')} — {r.get('expected_impact', '')}",
+            "detail": r.get("expected_impact", r.get("target", "")),
         })
 
     # ML budget reallocation → always "medium" priority
@@ -1005,7 +1059,7 @@ def _render_unified_action_plan(ai_recs: list, ml_recs: list, impacts: list) -> 
             "badge":  "BUDSJETT",
             "color":  "info",
             "action": f"Flytt budsjett: {r['from_channel']} → {r['to_channel']}",
-            "detail": f"{r['summary']}  (observert ROAS: {r['from_roas']:.1f}x → {r['to_roas']:.1f}x)",
+            "detail": f"ROAS: {r['from_roas']:.1f}x → {r['to_roas']:.1f}x",
         })
 
     # ML business impact → flag lowest-accuracy channel as high risk
@@ -1019,8 +1073,8 @@ def _render_unified_action_plan(ai_recs: list, ml_recs: list, impacts: list) -> 
                 "color":  "danger",
                 "action": f"Forbedre prediksjonsnøyaktighet for {worst['channel']}",
                 "detail": (
-                    f"Beslutningsnøyaktighet ca. {round(worst['decision_accuracy_proxy'] / 5) * 5:.0f}% — "
-                    f"estimert størrelsesorden ~NOK {round(worst['estimated_weekly_cost_of_error'] / 500) * 500:,.0f}/uke i risiko."
+                    f"~{round(worst['decision_accuracy_proxy'] / 5) * 5:.0f}% nøyaktighet · "
+                    f"~{fmt_nok(round(worst['estimated_weekly_cost_of_error'] / 500) * 500)}/uke risiko"
                 ),
             })
 
@@ -1190,8 +1244,12 @@ def render_ml_results(
                 dbc.CardHeader(html.Strong(p["channel"])),
                 dbc.CardBody([
                     html.P([
-                        html.Span("ROAS uke ", className="text-muted small"),
-                        html.Span(str(p["next_week"]), className="fw-bold"),
+                        html.Span("ROAS prediksjon ", className="text-muted small"),
+                        html.Span(
+                            pd.to_datetime(p.get("next_date", "")).strftime("%d %b")
+                            if p.get("next_date") else f"uke {p['next_week']}",
+                            className="fw-bold"
+                        ),
                         html.Span(f": {p['predicted_roas']:.2f}x",
                                   className="fw-bold text-primary ms-1"),
                     ], className="mb-1"),
@@ -1211,17 +1269,18 @@ def render_ml_results(
     for p in xgb_results:
         ch    = p["channel"]
         color = CHANNEL_COLORS.get(ch, "#888")
-        weeks = [h["week"] for h in p["history"]]
-        roas  = [h["roas"]  for h in p["history"]]
+        dates = [h.get("week_date", str(h["week"])) for h in p["history"]]
+        roas  = [h["roas"] for h in p["history"]]
 
         fig_xgb.add_trace(go.Scatter(
-            x=weeks, y=roas, name=f"{ch}",
+            x=dates, y=roas, name=f"{ch} (faktisk)",
             mode="lines+markers",
             line=dict(color=color, width=2.5),
             marker=dict(size=6),
+            hovertemplate="%{x|%d %b}<br>ROAS: %{y:.2f}x<extra></extra>",
         ))
         fig_xgb.add_trace(go.Scatter(
-            x=[p["next_week"]], y=[p["predicted_roas"]],
+            x=[p.get("next_date", str(p["next_week"]))], y=[p["predicted_roas"]],
             name=f"{ch} prediksjon",
             mode="markers",
             marker=dict(symbol="star", size=18, color=color,
@@ -1232,12 +1291,13 @@ def render_ml_results(
                 arrayminus=[p["predicted_roas"] - p["lower_90"]],
                 color=color, thickness=2, width=6,
             ),
+            hovertemplate="%{x|%d %b}<br>Prediksjon: %{y:.2f}x<extra></extra>",
         ))
 
     fig_xgb.update_layout(**CHART_LAYOUT)
     fig_xgb.update_layout(
         title="XGBoost ROAS-prediksjon med 90% usikkerhetsintervall",
-        xaxis_title="Uke", yaxis_title="ROAS (x)",
+        xaxis_title="Dato", yaxis_title="ROAS (x)",
         legend=dict(orientation="h", y=-0.28, font=dict(size=10)),
         margin=dict(t=50, b=90, l=8, r=8),
     )
@@ -1418,6 +1478,19 @@ def render_ml_results(
     # ── 6. Error analysis ─────────────────────────────────────────────────
     error_section: list = []
     if backtest:
+        def _failure_badge(r: dict) -> html.Span:
+            bias    = r.get("xgb_bias", 0)
+            dir_acc = r.get("direction_accuracy")
+            mae     = r.get("xgb_mae", 0)
+            if abs(bias) > 0.15:
+                return html.Span(f"🔴 Bias ({bias:+.2f}x)", className="badge bg-danger")
+            elif dir_acc is not None and dir_acc < 55:
+                return html.Span(f"🟡 Trend ({dir_acc:.0f}%)", className="badge bg-warning text-dark")
+            elif mae > 0.5:
+                return html.Span(f"🟡 Høy MAE ({mae:.2f})", className="badge bg-warning text-dark")
+            else:
+                return html.Span("🟢 OK", className="badge bg-success")
+
         error_rows = []
         worst_cases_all: list = []
         for r in backtest:
@@ -1429,7 +1502,7 @@ def render_ml_results(
                 html.Td(r["channel"]),
                 html.Td(html.Span(f"{bias:+.3f}x", className=bias_color)),
                 html.Td(dir_str),
-                html.Td(html.Small(r.get("failure_mode", "–"), className="text-muted")),
+                html.Td(_failure_badge(r)),
             ]))
             for wc in r.get("worst_cases", []):
                 worst_cases_all.append({**wc, "channel": r["channel"]})
@@ -1590,7 +1663,7 @@ def _make_backtest_fig(r: dict) -> go.Figure:
     ))
     fig.update_layout(**CHART_LAYOUT)
     fig.update_layout(
-        title=f"Backtesting: {ch} — MAE lin={r['lr_mae']:.3f} xgb={r['xgb_mae']:.3f}",
+        title=f"Backtesting: {ch} — MAE lin={r['lr_mae']:.3f} · xgb={r['xgb_mae']:.3f}",
         xaxis_title="Uke", yaxis_title="ROAS (x)",
         legend=dict(orientation="h", y=-0.28, font=dict(size=10)),
         margin=dict(t=50, b=80, l=8, r=8),
@@ -1601,6 +1674,7 @@ def _make_backtest_fig(r: dict) -> go.Figure:
 @app.callback(
     Output("ml-out", "children"),
     Output("ml-last-filters", "data"),
+    Output("ml-results-store", "data"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
@@ -1609,7 +1683,7 @@ def _make_backtest_fig(r: dict) -> go.Figure:
 def run_ml_analysis(client, campaign, channel, last_filters):
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     try:
         df = apply_filters(client, campaign, channel)
         xgb_results  = predict_xgboost_with_intervals(df)
@@ -1619,9 +1693,10 @@ def run_ml_analysis(client, campaign, channel, last_filters):
         recs         = suggest_budget_reallocation(df)
         avg_spend    = float(df.groupby("week")["spend"].sum().mean())
         impacts      = compute_business_impact(bt, avg_spend)
-        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts), current
+        cached = {"bt": bt, "impacts": impacts, "ml_recs": recs}
+        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts), current, cached
     except Exception as e:
-        return dbc.Alert(f"ML-feil: {e}", color="danger"), current
+        return dbc.Alert(f"ML-feil: {e}", color="danger"), current, dash.no_update
 
 
 @app.callback(
@@ -1638,6 +1713,28 @@ def update_chart_insights(client, campaign, channel):
     return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
 
 
+_DOT_ACTIVE = "●"
+_DOT_STYLE_ON  = {"color": "#3b82f6", "fontSize": "0.55rem", "verticalAlign": "middle"}
+_DOT_STYLE_OFF = {"display": "none"}
+
+@app.callback(
+    Output("dot-client",   "children"), Output("dot-client",   "style"),
+    Output("dot-campaign", "children"), Output("dot-campaign", "style"),
+    Output("dot-channel",  "children"), Output("dot-channel",  "style"),
+    Input("dd-client",   "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel",  "value"),
+)
+def update_filter_dots(client, campaign, channel):
+    def dot(val):
+        active = val and val != "All"
+        return (_DOT_ACTIVE, _DOT_STYLE_ON) if active else ("", _DOT_STYLE_OFF)
+    c, cs = dot(client)
+    p, ps = dot(campaign)
+    ch, chs = dot(channel)
+    return c, cs, p, ps, ch, chs
+
+
 @app.callback(
     Output("live-insights-panel", "children"),
     Output("insights-last-filters", "data"),
@@ -1645,8 +1742,9 @@ def update_chart_insights(client, campaign, channel):
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
     State("insights-last-filters", "data"),
+    State("ml-results-store", "data"),
 )
-def update_live_insights(client, campaign, channel, last_filters):
+def update_live_insights(client, campaign, channel, last_filters, ml_cache):
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
         return dash.no_update, dash.no_update
@@ -1654,15 +1752,19 @@ def update_live_insights(client, campaign, channel, last_filters):
         context = build_context(get_df(), client, campaign, channel)
         data = generate_insights(context, model=DEFAULT_MODEL)
 
-        # ML signals for the unified action plan
-        try:
-            df = apply_filters(client, campaign, channel)
-            bt = backtest_models(df)
-            avg_spend = float(df.groupby("week")["spend"].sum().mean())
-            impacts   = compute_business_impact(bt, avg_spend)
-            ml_recs   = suggest_budget_reallocation(df)
-        except Exception:
-            impacts, ml_recs = [], []
+        # Use cached ML results if available — avoids recomputing backtest
+        if ml_cache:
+            impacts = ml_cache.get("impacts", [])
+            ml_recs = ml_cache.get("ml_recs", [])
+        else:
+            try:
+                df = apply_filters(client, campaign, channel)
+                bt = backtest_models(df)
+                avg_spend = float(df.groupby("week")["spend"].sum().mean())
+                impacts   = compute_business_impact(bt, avg_spend)
+                ml_recs   = suggest_budget_reallocation(df)
+            except Exception:
+                impacts, ml_recs = [], []
 
         return render_insights(data, ml_recs, impacts), current
     except Exception as e:
