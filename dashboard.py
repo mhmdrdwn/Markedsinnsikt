@@ -421,6 +421,18 @@ sidebar = dbc.Col(
 
         html.Hr(style={"borderColor": "#e2e8f0", "marginTop": "0.5rem"}),
         html.Div(id="row-count", className="text-muted small text-center"),
+
+        html.Hr(style={"borderColor": "#e2e8f0", "marginTop": "0.75rem"}),
+        html.Div(html.Span("Last ned"), className="section-label"),
+        dbc.Button(
+            "⬇ CSV",
+            id="btn-download-csv",
+            color="outline-secondary",
+            size="sm",
+            className="w-100",
+        ),
+        dcc.Download(id="download-csv"),
+        dcc.Download(id="download-pdf"),
     ],
     width=2,
     style={
@@ -614,6 +626,15 @@ main = dbc.Col(
                 # ── Tab 1: Analyse ────────────────────────────
                 dbc.Tab(
                     [
+                        html.Div(
+                            dbc.Button(
+                                "⬇ Last ned rapport",
+                                id="btn-download-pdf-analyse",
+                                color="outline-primary",
+                                size="sm",
+                                className="float-end mt-3",
+                            ),
+                        ),
                         section_header("📈", "Oversikt"),
                         html.Div(id="portfolio-health-bar", className="mb-3"),
                         dbc.Row(id="kpi-row", className="mb-4 g-3"),
@@ -648,10 +669,23 @@ main = dbc.Col(
                 # ── Tab 2: ML-analyse ─────────────────────────
                 dbc.Tab(
                     [
-                        html.P(
-                            "XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
-                            "Walk-forward backtesting · Isolation Forest + z-score avviksdeteksjon.",
-                            className="text-muted small mt-4 mb-3",
+                        html.Div(
+                            [
+                                html.P(
+                                    "XGBoost-tidsserieprediksjoner med 90% konfidensintervaller · "
+                                    "Walk-forward backtesting · Isolation Forest + z-score avviksdeteksjon.",
+                                    className="text-muted small mb-0",
+                                    style={"flex": 1},
+                                ),
+                                dbc.Button(
+                                    "⬇ Last ned rapport",
+                                    id="btn-download-pdf-ml",
+                                    color="outline-primary",
+                                    size="sm",
+                                    style={"whiteSpace": "nowrap"},
+                                ),
+                            ],
+                            className="d-flex align-items-center gap-3 mt-4 mb-3",
                         ),
                         dcc.Loading(html.Div(id="ml-out"), type="circle"),
                     ],
@@ -663,6 +697,15 @@ main = dbc.Col(
                 # ── Tab 3: AI Innsikt ─────────────────────────
                 dbc.Tab(
                     [
+                        html.Div(
+                            dbc.Button(
+                                "⬇ Last ned rapport",
+                                id="btn-download-pdf-ai",
+                                color="outline-primary",
+                                size="sm",
+                            ),
+                            className="d-flex justify-content-end mt-3 mb-2",
+                        ),
                         dcc.Loading(
                             html.Div(id="live-insights-panel"),
                             type="circle",
@@ -1785,6 +1828,249 @@ def prefill_question(*_):
         "q-btn-3": "Hvorfor er konverteringene lave?",
     }
     return questions.get(ctx.triggered_id, dash.no_update)
+
+
+@app.callback(
+    Output("download-csv", "data"),
+    Input("btn-download-csv", "n_clicks"),
+    State("dd-client",   "value"),
+    State("dd-campaign", "value"),
+    State("dd-channel",  "value"),
+    prevent_initial_call=True,
+)
+def download_csv(_, client, campaign, channel):
+    df = apply_filters(client, campaign, channel)
+    # Human-readable column order for the export
+    cols = ["client", "campaign", "channel", "week_date", "spend",
+            "revenue", "roas", "ctr", "clicks", "conversions", "impressions",
+            "goal", "audience", "ad_text"]
+    export = df[[c for c in cols if c in df.columns]].rename(columns={
+        "client": "Kunde", "campaign": "Kampanje", "channel": "Kanal",
+        "week_date": "Dato", "spend": "Forbruk (NOK)", "revenue": "Inntekt (NOK)",
+        "roas": "ROAS", "ctr": "CTR (%)", "clicks": "Klikk",
+        "conversions": "Konverteringer", "impressions": "Visninger",
+        "goal": "Mål", "audience": "Målgruppe", "ad_text": "Annonsetekst",
+    })
+    parts = [p for p in [client, campaign, channel] if p and p != "All"]
+    filename = "markedsinnsikt_" + ("_".join(parts) if parts else "alle") + ".csv"
+    return dcc.send_data_frame(export.to_csv, filename, index=False)
+
+
+@app.callback(
+    Output("download-pdf", "data"),
+    Input("btn-download-pdf-analyse", "n_clicks"),
+    Input("btn-download-pdf-ml",      "n_clicks"),
+    Input("btn-download-pdf-ai",      "n_clicks"),
+    State("dd-client",                "value"),
+    State("dd-campaign",              "value"),
+    State("dd-channel",               "value"),
+    State("ml-results-store",         "data"),
+    prevent_initial_call=True,
+)
+def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache):
+    from datetime import datetime as _dt
+
+    # ── 1. AI insights ────────────────────────────────────────────────────
+    try:
+        context  = build_context(get_df(), client, campaign, channel)
+        ai_data  = generate_insights(context, model=DEFAULT_MODEL)
+    except Exception as e:
+        ai_data = {"summary": f"AI ikke tilgjengelig: {e}", "insights": [],
+                   "recommendations": [], "executive_decision": ""}
+
+    # ── 2. ML results (from cache or fresh) ───────────────────────────────
+    if ml_cache:
+        bt      = ml_cache.get("bt", [])
+        impacts = ml_cache.get("impacts", [])
+        ml_recs = ml_cache.get("ml_recs", [])
+    else:
+        try:
+            df        = apply_filters(client, campaign, channel)
+            bt        = backtest_models(df)
+            avg_spend = float(df.groupby("week")["spend"].sum().mean())
+            impacts   = compute_business_impact(bt, avg_spend)
+            ml_recs   = suggest_budget_reallocation(df)
+        except Exception:
+            bt, impacts, ml_recs = [], [], []
+
+    # ── 3. KPIs ───────────────────────────────────────────────────────────
+    kpis   = get_kpis_data(client, campaign, channel)
+    health = compute_portfolio_health(client, campaign, channel)
+
+    # ── 4. Build HTML report ──────────────────────────────────────────────
+    generated = _dt.now().strftime("%d.%m.%Y %H:%M")
+    scope_parts = [p for p in [client, campaign, channel] if p and p != "All"]
+    scope_str   = " · ".join(scope_parts) if scope_parts else "Alle kunder / kampanjer / kanaler"
+
+    def _kpi_row(label, value):
+        return f"<tr><td>{label}</td><td><strong>{value}</strong></td></tr>"
+
+    def _insight_rows():
+        rows = ""
+        for i in ai_data.get("insights", []):
+            rows += f"<tr><td><strong>{i.get('title','')}</strong></td><td>{i.get('detail','')}</td></tr>"
+        return rows or "<tr><td colspan='2'>Ingen innsikter.</td></tr>"
+
+    def _rec_rows():
+        rows = ""
+        priority_rank = {"high": 0, "medium": 1, "low": 2}
+        recs = sorted(ai_data.get("recommendations", []),
+                      key=lambda x: priority_rank.get(x.get("priority", "low"), 2))
+        for r in recs:
+            pri_no = {"high": "HØY", "medium": "MIDDELS", "low": "LAV"}.get(r.get("priority",""), "–")
+            rows += (f"<tr><td><span class='badge-{r.get('priority','low')}'>{pri_no}</span></td>"
+                     f"<td>{r.get('action','')}</td>"
+                     f"<td>{r.get('expected_impact','')}</td></tr>")
+        return rows or "<tr><td colspan='3'>Ingen anbefalinger.</td></tr>"
+
+    def _ml_bt_rows():
+        rows = ""
+        for r in bt:
+            bias = r.get("xgb_bias", 0)
+            bias_str = f"{bias:+.3f}x"
+            dir_acc = r.get("direction_accuracy")
+            dir_str = f"{dir_acc:.0f}%" if dir_acc is not None else "–"
+            imp = f"{r.get('improvement_pct', 0):+.1f}%"
+            rows += (f"<tr><td>{r['channel']}</td>"
+                     f"<td>{r['xgb_mae']:.3f}</td><td>{r['xgb_rmse']:.3f}</td>"
+                     f"<td>{bias_str}</td><td>{dir_str}</td><td>{imp}</td></tr>")
+        return rows or "<tr><td colspan='6'>Ikke nok data for backtesting.</td></tr>"
+
+    def _ml_rec_rows():
+        rows = ""
+        for r in ml_recs:
+            rows += (f"<tr><td>{r['from_channel']}</td><td>{r['to_channel']}</td>"
+                     f"<td>{r['from_roas']:.2f}x</td><td>{r['to_roas']:.2f}x</td>"
+                     f"<td>{r['summary']}</td></tr>")
+        return rows or "<tr><td colspan='5'>Ingen budsjettanbefalinger.</td></tr>"
+
+    def _impact_rows():
+        rows = ""
+        for imp in impacts:
+            acc = round(imp["decision_accuracy_proxy"] / 5) * 5
+            cost = round(imp["estimated_weekly_cost_of_error"] / 500) * 500
+            rows += (f"<tr><td>{imp['channel']}</td>"
+                     f"<td>ca. {acc:.0f}%</td>"
+                     f"<td>~NOK {cost:,.0f}</td>"
+                     f"<td>{imp['avg_actual_roas']:.2f}x</td></tr>")
+        return rows or "<tr><td colspan='4'>Ingen data.</td></tr>"
+
+    exec_decision = ai_data.get("executive_decision", "")
+    exec_block = (
+        f"<div class='exec-box'><div class='exec-label'>UKENS BESLUTNING</div>"
+        f"<div class='exec-text'>{exec_decision}</div></div>"
+        if exec_decision else ""
+    )
+
+    html_report = f"""<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<title>Markedsinnsikt AI — Rapport {generated}</title>
+<style>
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
+          color: #1e293b; margin: 0; padding: 2rem 2.5rem; background: #fff; }}
+  h1   {{ font-size: 1.5rem; color: #0f172a; margin-bottom: 0.2rem; }}
+  h2   {{ font-size: 1.05rem; color: #1e3a5f; border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.3rem; margin-top: 2rem; margin-bottom: 0.75rem; }}
+  h3   {{ font-size: 0.9rem; color: #475569; margin: 1rem 0 0.4rem; }}
+  .meta {{ color: #64748b; font-size: 0.82rem; margin-bottom: 1.5rem; }}
+  .exec-box {{ background: linear-gradient(135deg,#1e3a5f,#2c3e50); color: white;
+               border-left: 4px solid #3b82f6; border-radius: 8px;
+               padding: 1rem 1.25rem; margin-bottom: 1.25rem; }}
+  .exec-label {{ font-size: 0.65rem; letter-spacing: 0.1em; color: rgba(255,255,255,0.65);
+                 text-transform: uppercase; margin-bottom: 0.3rem; }}
+  .exec-text  {{ font-size: 1.05rem; font-weight: 700; line-height: 1.4; }}
+  .summary-box {{ background: #eff6ff; border-left: 3px solid #3b82f6;
+                  padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem;
+                  font-size: 0.92rem; }}
+  .health-bar-wrap {{ background: #e2e8f0; border-radius: 4px; height: 8px; width: 200px;
+                      display: inline-block; vertical-align: middle; margin-left: 0.5rem; }}
+  .health-bar {{ height: 8px; border-radius: 4px; background: {health['color']};
+                 width: {health['score']}%; }}
+  table  {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 1rem; }}
+  th     {{ background: #f1f5f9; text-align: left; padding: 0.45rem 0.6rem;
+            border-bottom: 2px solid #e2e8f0; font-weight: 600; }}
+  td     {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }}
+  tr:hover td {{ background: #f8fafc; }}
+  .badge-high   {{ background:#fee2e2; color:#b91c1c; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
+  .badge-medium {{ background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
+  .badge-low    {{ background:#d1fae5; color:#065f46; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
+  .footer {{ margin-top: 3rem; font-size: 0.75rem; color: #94a3b8; border-top: 1px solid #e2e8f0;
+             padding-top: 0.75rem; }}
+  @media print {{
+    body {{ padding: 0; }}
+    @page {{ margin: 1.5cm; }}
+  }}
+</style>
+</head>
+<body>
+
+<h1>📊 Markedsinnsikt AI — Analyserapport</h1>
+<div class="meta">
+  Generert: {generated} &nbsp;|&nbsp; Utvalg: <strong>{scope_str}</strong>
+</div>
+
+{exec_block}
+
+<div class="summary-box">{ai_data.get('summary', '')}</div>
+
+<h2>Porteføljehelse</h2>
+<table>
+  <tr>
+    <th>Indikator</th><th>Verdi</th>
+  </tr>
+  {_kpi_row("Totalt forbruk", fmt_nok(kpis["total_spend"]))}
+  {_kpi_row("Total inntekt",  fmt_nok(kpis["total_revenue"]))}
+  {_kpi_row("Konverteringer", f"{kpis['total_conversions']:,}")}
+  {_kpi_row("Gj.snitt ROAS",  f"{kpis['avg_roas']:.2f}x")}
+  {_kpi_row("Gj.snitt CTR",   f"{kpis['avg_ctr']:.2f}%")}
+  {_kpi_row("Porteføljehelse",
+    f"{health['score']}/100 {health['label']} "
+    f"<span class='health-bar-wrap'><span class='health-bar'></span></span>")}
+</table>
+
+<h2>AI-innsikt</h2>
+<table>
+  <tr><th style="width:28%">Tema</th><th>Detalj</th></tr>
+  {_insight_rows()}
+</table>
+
+<h2>Anbefalinger (AI)</h2>
+<table>
+  <tr><th style="width:10%">Prioritet</th><th style="width:40%">Tiltak</th><th>Forventet effekt</th></tr>
+  {_rec_rows()}
+</table>
+
+<h2>ML — Budsjettomfordeling</h2>
+<table>
+  <tr><th>Fra kanal</th><th>Til kanal</th><th>Fra ROAS</th><th>Til ROAS</th><th>Begrunnelse</th></tr>
+  {_ml_rec_rows()}
+</table>
+
+<h2>ML — Backtesting (walk-forward validering)</h2>
+<table>
+  <tr><th>Kanal</th><th>XGB MAE</th><th>XGB RMSE</th><th>Bias</th><th>Trendretning</th><th>Forbedring vs lin.</th></tr>
+  {_ml_bt_rows()}
+</table>
+
+<h2>ML — Forretningsmessig konsekvens av prediksjonfeil</h2>
+<table>
+  <tr><th>Kanal</th><th>Beslutningsnøyaktighet</th><th>Ukentlig feilkostnad</th><th>Gj.snitt ROAS</th></tr>
+  {_impact_rows()}
+</table>
+
+<div class="footer">
+  Markedsinnsikt AI · Syntetiske data for demoformål ·
+  Rapport generert {generated}
+</div>
+
+</body>
+</html>"""
+
+    parts = [p for p in [client, campaign, channel] if p and p != "All"]
+    filename = "rapport_" + ("_".join(parts) if parts else "alle") + f"_{_dt.now().strftime('%Y%m%d')}.html"
+    return dcc.send_string(html_report, filename)
 
 
 if __name__ == "__main__":

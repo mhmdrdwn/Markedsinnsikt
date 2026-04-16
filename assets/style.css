@@ -156,3 +156,39 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ===================================================
+   Print / PDF styles  (triggered by window.print())
+   =================================================== */
+@media print {
+  /* Hide interactive / navigation elements */
+  #chat-panel,
+  #chat-toggle-btn,
+  #notif-wrapper,
+  #notif-modal,
+  .sidebar-brand ~ *,          /* filter dropdowns + download buttons */
+  [id^="btn-download"],
+  [id^="notif"],
+  [id="init-trigger"] { display: none !important; }
+
+  /* Hide the entire sidebar column */
+  .col-2 { display: none !important; }
+
+  /* Make main content full width */
+  .col-10 { flex: 0 0 100% !important; max-width: 100% !important; }
+
+  /* Remove sticky positioning so content flows naturally */
+  .sticky-top, [style*="position: sticky"] { position: static !important; }
+
+  /* Force white background for clean printing */
+  body, .page-header { background: white !important; }
+
+  /* Avoid page breaks inside cards and charts */
+  .card, .chart-wrapper, table { break-inside: avoid; }
+
+  /* Show page URL and title in footer */
+  @page {
+    margin: 1.5cm;
+    @bottom-center { content: "Markedsinnsikt AI — " counter(page) " / " counter(pages); }
+  }
+}
