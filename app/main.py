@@ -299,8 +299,11 @@ def compute_chart_insights(client, campaign, channel) -> dict:
 # App
 # ---------------------------------------------------------------------------
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 app = dash.Dash(
     __name__,
+    assets_folder=os.path.join(_ROOT, "assets"),
     external_stylesheets=[
         dbc.themes.FLATLY,
         "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
