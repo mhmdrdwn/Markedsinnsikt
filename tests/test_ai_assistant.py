@@ -1,4 +1,4 @@
-"""Tests for ai_assistant.py — context builder and anomaly detection."""
+"""Tests for ai package — context builder and anomaly detection."""
 
 import pandas as pd
 import pytest
@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from data import generate_dataset
-from ai_assistant import build_context, detect_anomalies
+from ai import build_context, detect_anomalies
 
 
 @pytest.fixture(scope="module")

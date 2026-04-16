@@ -1,4 +1,4 @@
-"""Tests for ml_models.py — forecasting, backtesting, anomaly detection."""
+"""Tests for ml package — forecasting, backtesting, anomaly detection."""
 
 import pandas as pd
 import pytest
@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from data import generate_dataset
-from ml_models import (
+from ml import (
     backtest_models,
     detect_anomalies_zscore,
     detect_anomalies_isolation_forest,
