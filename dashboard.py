@@ -781,6 +781,8 @@ anomaly_notification = html.Div(
         dcc.Store(id="ml-last-filters", data=None),
         # Cache ML results so AI tab can read without recomputing
         dcc.Store(id="ml-results-store", data=None),
+        # Cache AI results so PDF can read without re-calling the API
+        dcc.Store(id="ai-results-store", data=None),
     ]
 )
 
@@ -1721,9 +1723,13 @@ def _make_backtest_fig(r: dict) -> go.Figure:
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
+    Input("main-tabs", "active_tab"),
     State("ml-last-filters", "data"),
 )
-def run_ml_analysis(client, campaign, channel, last_filters):
+def run_ml_analysis(client, campaign, channel, active_tab, last_filters):
+    # Only run when the ML tab is visible — avoids blocking other callbacks
+    if active_tab != "tab-ml":
+        return dash.no_update, dash.no_update, dash.no_update
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
         return dash.no_update, dash.no_update, dash.no_update
@@ -1736,7 +1742,12 @@ def run_ml_analysis(client, campaign, channel, last_filters):
         recs         = suggest_budget_reallocation(df)
         avg_spend    = float(df.groupby("week")["spend"].sum().mean())
         impacts      = compute_business_impact(bt, avg_spend)
-        cached = {"bt": bt, "impacts": impacts, "ml_recs": recs}
+        cached = {
+            "bt": bt, "impacts": impacts, "ml_recs": recs,
+            "xgb_results": xgb_results,
+            "z_anomalies": z_anomalies,
+            "if_anomalies": if_anomalies,
+        }
         return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts), current, cached
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger"), current, dash.no_update
@@ -1781,16 +1792,21 @@ def update_filter_dots(client, campaign, channel):
 @app.callback(
     Output("live-insights-panel", "children"),
     Output("insights-last-filters", "data"),
+    Output("ai-results-store", "data"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
+    Input("main-tabs", "active_tab"),
     State("insights-last-filters", "data"),
     State("ml-results-store", "data"),
 )
-def update_live_insights(client, campaign, channel, last_filters, ml_cache):
+def update_live_insights(client, campaign, channel, active_tab, last_filters, ml_cache):
+    # Only run when the AI tab is visible — avoids blocking other callbacks
+    if active_tab != "tab-innsikt":
+        return dash.no_update, dash.no_update, dash.no_update
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     try:
         context = build_context(get_df(), client, campaign, channel)
         data = generate_insights(context, model=DEFAULT_MODEL)
@@ -1809,9 +1825,9 @@ def update_live_insights(client, campaign, channel, last_filters, ml_cache):
             except Exception:
                 impacts, ml_recs = [], []
 
-        return render_insights(data, ml_recs, impacts), current
+        return render_insights(data, ml_recs, impacts), current, data
     except Exception as e:
-        return ai_error_alert(e), current
+        return ai_error_alert(e), current, dash.no_update
 
 
 @app.callback(
@@ -1865,212 +1881,393 @@ def download_csv(_, client, campaign, channel):
     State("dd-campaign",              "value"),
     State("dd-channel",               "value"),
     State("ml-results-store",         "data"),
+    State("ai-results-store",         "data"),
     prevent_initial_call=True,
 )
-def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache):
+def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_cache):
     from datetime import datetime as _dt
+    from fpdf import FPDF
 
-    # ── 1. AI insights ────────────────────────────────────────────────────
-    try:
-        context  = build_context(get_df(), client, campaign, channel)
-        ai_data  = generate_insights(context, model=DEFAULT_MODEL)
-    except Exception as e:
-        ai_data = {"summary": f"AI ikke tilgjengelig: {e}", "insights": [],
-                   "recommendations": [], "executive_decision": ""}
+    triggered = ctx.triggered_id
 
-    # ── 2. ML results (from cache or fresh) ───────────────────────────────
-    if ml_cache:
-        bt      = ml_cache.get("bt", [])
-        impacts = ml_cache.get("impacts", [])
-        ml_recs = ml_cache.get("ml_recs", [])
-    else:
-        try:
-            df        = apply_filters(client, campaign, channel)
-            bt        = backtest_models(df)
-            avg_spend = float(df.groupby("week")["spend"].sum().mean())
-            impacts   = compute_business_impact(bt, avg_spend)
-            ml_recs   = suggest_budget_reallocation(df)
-        except Exception:
-            bt, impacts, ml_recs = [], [], []
-
-    # ── 3. KPIs ───────────────────────────────────────────────────────────
+    # ── Only load what the triggered tab actually needs ───────────────────
     kpis   = get_kpis_data(client, campaign, channel)
     health = compute_portfolio_health(client, campaign, channel)
 
-    # ── 4. Build HTML report ──────────────────────────────────────────────
-    generated = _dt.now().strftime("%d.%m.%Y %H:%M")
+    # ML data: needed by ML tab and AI tab (budget summary)
+    need_ml = triggered in ("btn-download-pdf-ml", "btn-download-pdf-ai")
+    if need_ml:
+        if ml_cache:
+            bt           = ml_cache.get("bt", [])
+            impacts      = ml_cache.get("impacts", [])
+            ml_recs      = ml_cache.get("ml_recs", [])
+            xgb_results  = ml_cache.get("xgb_results", [])
+            z_anomalies  = ml_cache.get("z_anomalies", [])
+            if_anomalies = ml_cache.get("if_anomalies", [])
+        else:
+            try:
+                df           = apply_filters(client, campaign, channel)
+                xgb_results  = predict_xgboost_with_intervals(df)
+                bt           = backtest_models(df)
+                avg_spend    = float(df.groupby("week")["spend"].sum().mean())
+                impacts      = compute_business_impact(bt, avg_spend)
+                ml_recs      = suggest_budget_reallocation(df)
+                z_anomalies  = detect_anomalies_zscore(df)
+                if_anomalies = detect_anomalies_isolation_forest(df)
+            except Exception:
+                bt = impacts = ml_recs = xgb_results = z_anomalies = if_anomalies = []
+    else:
+        bt = impacts = ml_recs = xgb_results = z_anomalies = if_anomalies = []
+
+    # AI data: only needed by AI tab
+    if triggered == "btn-download-pdf-ai":
+        if ai_cache:
+            ai_data = ai_cache
+        else:
+            try:
+                context = build_context(get_df(), client, campaign, channel)
+                ai_data = generate_insights(context, model=DEFAULT_MODEL)
+            except Exception as e:
+                ai_data = {"summary": f"AI ikke tilgjengelig: {e}", "insights": [],
+                           "recommendations": [], "executive_decision": ""}
+    else:
+        ai_data = {}
+
+    # ── PDF helpers ───────────────────────────────────────────────────────
+    generated   = _dt.now().strftime("%d.%m.%Y %H:%M")
     scope_parts = [p for p in [client, campaign, channel] if p and p != "All"]
-    scope_str   = " · ".join(scope_parts) if scope_parts else "Alle kunder / kampanjer / kanaler"
+    scope_str   = " | ".join(scope_parts) if scope_parts else "Alle kunder / kampanjer / kanaler"
 
-    def _kpi_row(label, value):
-        return f"<tr><td>{label}</td><td><strong>{value}</strong></td></tr>"
+    C_DARK  = (15,  23,  42)
+    C_BLUE  = (30,  58,  95)
+    C_LIGHT = (241, 245, 249)
+    C_MUTED = (100, 116, 139)
+    C_WHITE = (255, 255, 255)
+    C_RED   = (185,  28,  28)
+    C_AMBER = (146,  64,  14)
+    C_GREEN = (6,    95,  70)
 
-    def _insight_rows():
-        rows = ""
-        for i in ai_data.get("insights", []):
-            rows += f"<tr><td><strong>{i.get('title','')}</strong></td><td>{i.get('detail','')}</td></tr>"
-        return rows or "<tr><td colspan='2'>Ingen innsikter.</td></tr>"
+    def _safe(text: str) -> str:
+        replacements = {
+            "\u2014": "-", "\u2013": "-",
+            "\u202f": " ", "\u00a0": " ",
+            "\u2019": "'", "\u2018": "'",
+            "\u201c": '"', "\u201d": '"',
+            "\u2022": "-",
+        }
+        t = text or ""
+        for src, dst in replacements.items():
+            t = t.replace(src, dst)
+        return t.encode("latin-1", errors="replace").decode("latin-1")
 
-    def _rec_rows():
-        rows = ""
-        priority_rank = {"high": 0, "medium": 1, "low": 2}
+    def _fmt_nok_pdf(value: float) -> str:
+        return f"NOK {value:,.0f}".replace(",", " ")
+
+    class ReportPDF(FPDF):
+        def __init__(self, subtitle):
+            super().__init__()
+            self._subtitle = subtitle
+        def header(self):
+            self.set_font("Helvetica", "B", 9)
+            self.set_text_color(*C_MUTED)
+            self.cell(0, 6, f"Markedsinnsikt AI - {self._subtitle}", align="L")
+            self.cell(0, 6, f"Side {self.page_no()}", align="R", new_x="LMARGIN", new_y="NEXT")
+            self.set_draw_color(*C_LIGHT)
+            self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+            self.ln(3)
+        def footer(self):
+            self.set_y(-13)
+            self.set_font("Helvetica", "", 8)
+            self.set_text_color(*C_MUTED)
+            self.cell(0, 6, _safe(f"Generert: {generated}  |  {scope_str}  |  Syntetiske data"), align="C")
+        def cover(self, title):
+            self.set_font("Helvetica", "B", 18)
+            self.set_text_color(*C_DARK)
+            self.cell(0, 10, "Markedsinnsikt AI", new_x="LMARGIN", new_y="NEXT")
+            self.set_font("Helvetica", "", 12)
+            self.set_text_color(*C_MUTED)
+            self.cell(0, 7, _safe(title), new_x="LMARGIN", new_y="NEXT")
+            self.set_font("Helvetica", "", 8.5)
+            self.cell(0, 5, _safe(f"Generert: {generated}   |   Utvalg: {scope_str}"), new_x="LMARGIN", new_y="NEXT")
+            self.ln(5)
+        def section_title(self, title: str):
+            self.ln(4)
+            self.set_font("Helvetica", "B", 11)
+            self.set_text_color(*C_BLUE)
+            self.set_fill_color(*C_LIGHT)
+            self.cell(0, 8, _safe(title), fill=True, new_x="LMARGIN", new_y="NEXT")
+            self.ln(2)
+            self.set_text_color(*C_DARK)
+        def table_header(self, cols):
+            self.set_font("Helvetica", "B", 8)
+            self.set_fill_color(*C_LIGHT)
+            self.set_text_color(*C_DARK)
+            for label, w in cols:
+                self.cell(w, 6, _safe(label), border="B", fill=True)
+            self.ln()
+        def table_row(self, cells, shade=False):
+            self.set_font("Helvetica", "", 8)
+            self.set_text_color(*C_DARK)
+            if shade:
+                self.set_fill_color(248, 250, 252)
+            for text, w in cells:
+                self.cell(w, 5.5, _safe(str(text)), border="B", fill=shade)
+            self.ln()
+
+    parts    = [p for p in [client, campaign, channel] if p and p != "All"]
+    tag      = "_".join(parts) if parts else "alle"
+    date_tag = _dt.now().strftime("%Y%m%d")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ANALYSE TAB — KPIs + chart insights + portfolio health
+    # ══════════════════════════════════════════════════════════════════════
+    if triggered == "btn-download-pdf-analyse":
+        pdf = ReportPDF("Oversiktsrapport")
+        pdf.set_auto_page_break(auto=True, margin=18)
+        pdf.set_margins(left=14, top=14, right=14)
+        pdf.add_page()
+        pdf.cover("Oversikt — Analyse")
+        W = pdf.w - pdf.l_margin - pdf.r_margin
+
+        # Portfolio health
+        pdf.section_title("Portefolgehelse")
+        pdf.set_font("Helvetica", "B", 28)
+        pdf.set_text_color(*C_DARK)
+        pdf.cell(0, 14, f"{health['score']}/100", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(*C_MUTED)
+        pdf.cell(0, 6, _safe(health["label"]), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+
+        # KPIs
+        pdf.section_title("Nokkelmetrikker")
+        pdf.table_header([("Indikator", W*0.5), ("Verdi", W*0.5)])
+        for i, (label, val) in enumerate([
+            ("Totalt forbruk",  _fmt_nok_pdf(kpis["total_spend"])),
+            ("Total inntekt",   _fmt_nok_pdf(kpis["total_revenue"])),
+            ("Konverteringer",  f"{kpis['total_conversions']:,}"),
+            ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
+            ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
+            ("Datarader",       f"{kpis['row_count']:,}"),
+        ]):
+            pdf.table_row([(label, W*0.5), (val, W*0.5)], shade=(i % 2 == 0))
+        pdf.ln(4)
+
+        # Chart insights
+        hints = compute_chart_insights(client, campaign, channel)
+        pdf.section_title("Automatiske innsikter fra grafene")
+        for i, (label, txt) in enumerate([
+            ("ROAS per kanal",         hints.get("roas", "")),
+            ("Konverteringer",         hints.get("conv", "")),
+            ("Forbruk per kanal",      hints.get("spend", "")),
+            ("Ukentlig forbrukstrend", hints.get("weekly", "")),
+        ]):
+            if txt:
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_text_color(*C_DARK)
+                pdf.cell(W*0.30, 5.5, _safe(label), border="B", fill=(i % 2 == 0))
+                pdf.set_font("Helvetica", "", 8)
+                pdf.cell(W*0.70, 5.5, _safe(txt), border="B", fill=(i % 2 == 0))
+                pdf.ln()
+
+        filename = f"rapport_oversikt_{tag}_{date_tag}.pdf"
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ML TAB — predictions, backtesting, anomalies, business impact
+    # ══════════════════════════════════════════════════════════════════════
+    elif triggered == "btn-download-pdf-ml":
+        pdf = ReportPDF("ML-analyserapport")
+        pdf.set_auto_page_break(auto=True, margin=18)
+        pdf.set_margins(left=14, top=14, right=14)
+        pdf.add_page()
+        pdf.cover("ML-analyse")
+        W = pdf.w - pdf.l_margin - pdf.r_margin
+
+        # XGBoost predictions
+        pdf.section_title("XGBoost ROAS-prediksjon neste uke")
+        pdf.table_header([("Kanal", W*0.30), ("Prediksjon", W*0.20),
+                          ("90% intervall", W*0.30), ("Dato", W*0.20)])
+        if xgb_results:
+            for i, p in enumerate(xgb_results):
+                pdf.table_row([
+                    (p["channel"],                                          W*0.30),
+                    (f"{p['predicted_roas']:.2f}x",                        W*0.20),
+                    (f"[{p['lower_90']:.2f} - {p['upper_90']:.2f}]x",     W*0.30),
+                    (p.get("next_date", f"Uke {p['next_week']}"),          W*0.20),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ingen prediksjoner.", W)], shade=False)
+        pdf.ln(4)
+
+        # Backtesting
+        pdf.section_title("Backtesting — walk-forward validering")
+        pdf.table_header([("Kanal", W*0.22), ("XGB MAE", W*0.13), ("XGB RMSE", W*0.14),
+                          ("Bias", W*0.14), ("Trendretning", W*0.17), ("Forbedring", W*0.20)])
+        if bt:
+            for i, r in enumerate(bt):
+                d = r.get("direction_accuracy")
+                pdf.table_row([
+                    (r["channel"],                              W*0.22),
+                    (f"{r['xgb_mae']:.3f}",                    W*0.13),
+                    (f"{r['xgb_rmse']:.3f}",                   W*0.14),
+                    (f"{r.get('xgb_bias',0):+.3f}x",           W*0.14),
+                    (f"{d:.0f}%" if d is not None else "-",    W*0.17),
+                    (f"{r.get('improvement_pct',0):+.1f}%",    W*0.20),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ikke nok data.", W)], shade=False)
+        pdf.ln(4)
+
+        # Business impact
+        pdf.section_title("Forretningsmessig konsekvens av prediksjonfeil")
+        pdf.table_header([("Kanal", W*0.28), ("Beslutningsnoyaktighet", W*0.27),
+                          ("Ukentlig feilkostnad", W*0.25), ("Gj.snitt ROAS", W*0.20)])
+        if impacts:
+            for i, imp in enumerate(impacts):
+                acc  = round(imp["decision_accuracy_proxy"] / 5) * 5
+                cost = round(imp["estimated_weekly_cost_of_error"] / 500) * 500
+                pdf.table_row([
+                    (imp["channel"],           W*0.28),
+                    (f"ca. {acc:.0f}%",        W*0.27),
+                    (_fmt_nok_pdf(cost),        W*0.25),
+                    (f"{imp['avg_actual_roas']:.2f}x", W*0.20),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ingen data.", W)], shade=False)
+        pdf.ln(4)
+
+        # Anomalies
+        all_anomalies = (z_anomalies or [])[:5] + (if_anomalies or [])[:5]
+        pdf.section_title("Avviksdeteksjon (Z-score + Isolation Forest)")
+        pdf.table_header([("Alvorlighet", W*0.15), ("Kunde / Kampanje", W*0.40), ("Detalj", W*0.45)])
+        if all_anomalies:
+            for i, a in enumerate(all_anomalies):
+                pdf.table_row([
+                    (a.get("severity","").upper(),                      W*0.15),
+                    (f"{a.get('client','')} / {a.get('campaign','')}",  W*0.40),
+                    (a.get("detail", ""),                               W*0.45),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ingen avvik oppdaget.", W)], shade=False)
+
+        # Budget reallocation
+        pdf.section_title("ML — Budsjettomfordeling")
+        pdf.table_header([("Fra kanal", W*0.28), ("Til kanal", W*0.28),
+                          ("Fra ROAS", W*0.17), ("Til ROAS", W*0.17), ("Begrunnelse", W*0.10)])
+        if ml_recs:
+            for i, r in enumerate(ml_recs):
+                pdf.table_row([
+                    (r["from_channel"],        W*0.28),
+                    (r["to_channel"],          W*0.28),
+                    (f"{r['from_roas']:.2f}x", W*0.17),
+                    (f"{r['to_roas']:.2f}x",   W*0.17),
+                    (r.get("summary",""),      W*0.10),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
+
+        filename = f"rapport_ml_{tag}_{date_tag}.pdf"
+
+    # ══════════════════════════════════════════════════════════════════════
+    # AI TAB — executive decision, summary, insights, recommendations
+    # ══════════════════════════════════════════════════════════════════════
+    else:
+        pdf = ReportPDF("AI Innsiktsrapport")
+        pdf.set_auto_page_break(auto=True, margin=18)
+        pdf.set_margins(left=14, top=14, right=14)
+        pdf.add_page()
+        pdf.cover("AI Innsikt")
+        W = pdf.w - pdf.l_margin - pdf.r_margin
+
+        # Executive decision
+        exec_decision = ai_data.get("executive_decision", "")
+        if exec_decision:
+            pdf.set_fill_color(*C_BLUE)
+            pdf.set_text_color(*C_WHITE)
+            pdf.set_font("Helvetica", "", 7)
+            pdf.cell(0, 5, "UKENS BESLUTNING", fill=True, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 6, _safe(exec_decision), fill=True)
+            pdf.set_text_color(*C_DARK)
+            pdf.ln(4)
+
+        # AI summary
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_fill_color(239, 246, 255)
+        pdf.multi_cell(0, 5.5, _safe(ai_data.get("summary", "")), fill=True)
+        pdf.ln(4)
+
+        # KPI snapshot
+        pdf.section_title("Nokkelmetrikker")
+        pdf.table_header([("Indikator", W*0.5), ("Verdi", W*0.5)])
+        for i, (label, val) in enumerate([
+            ("Totalt forbruk",  _fmt_nok_pdf(kpis["total_spend"])),
+            ("Total inntekt",   _fmt_nok_pdf(kpis["total_revenue"])),
+            ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
+            ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
+            ("Portefolgehelse", f"{health['score']}/100  {health['label']}"),
+        ]):
+            pdf.table_row([(label, W*0.5), (val, W*0.5)], shade=(i % 2 == 0))
+        pdf.ln(4)
+
+        # AI insights
+        pdf.section_title("AI-innsikt")
+        pdf.table_header([("Tema", W*0.30), ("Detalj", W*0.70)])
+        insights = ai_data.get("insights", [])
+        if insights:
+            for i, ins in enumerate(insights):
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_text_color(*C_DARK)
+                pdf.cell(W*0.30, 5.5, _safe(ins.get("title", "")), border="B", fill=(i%2==0))
+                pdf.set_font("Helvetica", "", 8)
+                pdf.cell(W*0.70, 5.5, _safe(ins.get("detail", "")), border="B", fill=(i%2==0))
+                pdf.ln()
+        else:
+            pdf.table_row([("Ingen innsikter.", W)], shade=False)
+        pdf.ln(4)
+
+        # AI recommendations
+        pdf.section_title("Anbefalinger (AI)")
+        pdf.table_header([("Prioritet", W*0.12), ("Tiltak", W*0.45), ("Forventet effekt", W*0.43)])
+        pri_map = {"high": ("HOY", C_RED), "medium": ("MIDDELS", C_AMBER), "low": ("LAV", C_GREEN)}
         recs = sorted(ai_data.get("recommendations", []),
-                      key=lambda x: priority_rank.get(x.get("priority", "low"), 2))
-        for r in recs:
-            pri_no = {"high": "HØY", "medium": "MIDDELS", "low": "LAV"}.get(r.get("priority",""), "–")
-            rows += (f"<tr><td><span class='badge-{r.get('priority','low')}'>{pri_no}</span></td>"
-                     f"<td>{r.get('action','')}</td>"
-                     f"<td>{r.get('expected_impact','')}</td></tr>")
-        return rows or "<tr><td colspan='3'>Ingen anbefalinger.</td></tr>"
+                      key=lambda x: {"high":0,"medium":1,"low":2}.get(x.get("priority","low"),2))
+        for i, r in enumerate(recs):
+            shade = i % 2 == 0
+            pri_label, pri_color = pri_map.get(r.get("priority","low"), ("-", C_MUTED))
+            pdf.set_font("Helvetica", "B", 7.5)
+            pdf.set_text_color(*pri_color)
+            pdf.cell(W*0.12, 5.5, pri_label, border="B", fill=shade)
+            pdf.set_font("Helvetica", "", 8)
+            pdf.set_text_color(*C_DARK)
+            pdf.cell(W*0.45, 5.5, _safe(r.get("action", "")), border="B", fill=shade)
+            pdf.cell(W*0.43, 5.5, _safe(r.get("expected_impact", "")), border="B", fill=shade)
+            pdf.ln()
+        if not recs:
+            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
+        pdf.ln(4)
 
-    def _ml_bt_rows():
-        rows = ""
-        for r in bt:
-            bias = r.get("xgb_bias", 0)
-            bias_str = f"{bias:+.3f}x"
-            dir_acc = r.get("direction_accuracy")
-            dir_str = f"{dir_acc:.0f}%" if dir_acc is not None else "–"
-            imp = f"{r.get('improvement_pct', 0):+.1f}%"
-            rows += (f"<tr><td>{r['channel']}</td>"
-                     f"<td>{r['xgb_mae']:.3f}</td><td>{r['xgb_rmse']:.3f}</td>"
-                     f"<td>{bias_str}</td><td>{dir_str}</td><td>{imp}</td></tr>")
-        return rows or "<tr><td colspan='6'>Ikke nok data for backtesting.</td></tr>"
+        # ML budget summary
+        pdf.section_title("ML — Budsjettomfordeling")
+        pdf.table_header([("Fra", W*0.25), ("Til", W*0.25), ("Fra ROAS", W*0.17),
+                          ("Til ROAS", W*0.17), ("Begrunnelse", W*0.16)])
+        if ml_recs:
+            for i, r in enumerate(ml_recs):
+                pdf.table_row([
+                    (r["from_channel"],        W*0.25),
+                    (r["to_channel"],          W*0.25),
+                    (f"{r['from_roas']:.2f}x", W*0.17),
+                    (f"{r['to_roas']:.2f}x",   W*0.17),
+                    (r.get("summary",""),      W*0.16),
+                ], shade=(i % 2 == 0))
+        else:
+            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
 
-    def _ml_rec_rows():
-        rows = ""
-        for r in ml_recs:
-            rows += (f"<tr><td>{r['from_channel']}</td><td>{r['to_channel']}</td>"
-                     f"<td>{r['from_roas']:.2f}x</td><td>{r['to_roas']:.2f}x</td>"
-                     f"<td>{r['summary']}</td></tr>")
-        return rows or "<tr><td colspan='5'>Ingen budsjettanbefalinger.</td></tr>"
+        filename = f"rapport_ai_{tag}_{date_tag}.pdf"
 
-    def _impact_rows():
-        rows = ""
-        for imp in impacts:
-            acc = round(imp["decision_accuracy_proxy"] / 5) * 5
-            cost = round(imp["estimated_weekly_cost_of_error"] / 500) * 500
-            rows += (f"<tr><td>{imp['channel']}</td>"
-                     f"<td>ca. {acc:.0f}%</td>"
-                     f"<td>~NOK {cost:,.0f}</td>"
-                     f"<td>{imp['avg_actual_roas']:.2f}x</td></tr>")
-        return rows or "<tr><td colspan='4'>Ingen data.</td></tr>"
-
-    exec_decision = ai_data.get("executive_decision", "")
-    exec_block = (
-        f"<div class='exec-box'><div class='exec-label'>UKENS BESLUTNING</div>"
-        f"<div class='exec-text'>{exec_decision}</div></div>"
-        if exec_decision else ""
-    )
-
-    html_report = f"""<!DOCTYPE html>
-<html lang="no">
-<head>
-<meta charset="UTF-8">
-<title>Markedsinnsikt AI — Rapport {generated}</title>
-<style>
-  body {{ font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
-          color: #1e293b; margin: 0; padding: 2rem 2.5rem; background: #fff; }}
-  h1   {{ font-size: 1.5rem; color: #0f172a; margin-bottom: 0.2rem; }}
-  h2   {{ font-size: 1.05rem; color: #1e3a5f; border-bottom: 2px solid #e2e8f0;
-          padding-bottom: 0.3rem; margin-top: 2rem; margin-bottom: 0.75rem; }}
-  h3   {{ font-size: 0.9rem; color: #475569; margin: 1rem 0 0.4rem; }}
-  .meta {{ color: #64748b; font-size: 0.82rem; margin-bottom: 1.5rem; }}
-  .exec-box {{ background: linear-gradient(135deg,#1e3a5f,#2c3e50); color: white;
-               border-left: 4px solid #3b82f6; border-radius: 8px;
-               padding: 1rem 1.25rem; margin-bottom: 1.25rem; }}
-  .exec-label {{ font-size: 0.65rem; letter-spacing: 0.1em; color: rgba(255,255,255,0.65);
-                 text-transform: uppercase; margin-bottom: 0.3rem; }}
-  .exec-text  {{ font-size: 1.05rem; font-weight: 700; line-height: 1.4; }}
-  .summary-box {{ background: #eff6ff; border-left: 3px solid #3b82f6;
-                  padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem;
-                  font-size: 0.92rem; }}
-  .health-bar-wrap {{ background: #e2e8f0; border-radius: 4px; height: 8px; width: 200px;
-                      display: inline-block; vertical-align: middle; margin-left: 0.5rem; }}
-  .health-bar {{ height: 8px; border-radius: 4px; background: {health['color']};
-                 width: {health['score']}%; }}
-  table  {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 1rem; }}
-  th     {{ background: #f1f5f9; text-align: left; padding: 0.45rem 0.6rem;
-            border-bottom: 2px solid #e2e8f0; font-weight: 600; }}
-  td     {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }}
-  tr:hover td {{ background: #f8fafc; }}
-  .badge-high   {{ background:#fee2e2; color:#b91c1c; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
-  .badge-medium {{ background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
-  .badge-low    {{ background:#d1fae5; color:#065f46; padding:2px 6px; border-radius:4px; font-size:0.75rem; }}
-  .footer {{ margin-top: 3rem; font-size: 0.75rem; color: #94a3b8; border-top: 1px solid #e2e8f0;
-             padding-top: 0.75rem; }}
-  @media print {{
-    body {{ padding: 0; }}
-    @page {{ margin: 1.5cm; }}
-  }}
-</style>
-</head>
-<body>
-
-<h1>📊 Markedsinnsikt AI — Analyserapport</h1>
-<div class="meta">
-  Generert: {generated} &nbsp;|&nbsp; Utvalg: <strong>{scope_str}</strong>
-</div>
-
-{exec_block}
-
-<div class="summary-box">{ai_data.get('summary', '')}</div>
-
-<h2>Porteføljehelse</h2>
-<table>
-  <tr>
-    <th>Indikator</th><th>Verdi</th>
-  </tr>
-  {_kpi_row("Totalt forbruk", fmt_nok(kpis["total_spend"]))}
-  {_kpi_row("Total inntekt",  fmt_nok(kpis["total_revenue"]))}
-  {_kpi_row("Konverteringer", f"{kpis['total_conversions']:,}")}
-  {_kpi_row("Gj.snitt ROAS",  f"{kpis['avg_roas']:.2f}x")}
-  {_kpi_row("Gj.snitt CTR",   f"{kpis['avg_ctr']:.2f}%")}
-  {_kpi_row("Porteføljehelse",
-    f"{health['score']}/100 {health['label']} "
-    f"<span class='health-bar-wrap'><span class='health-bar'></span></span>")}
-</table>
-
-<h2>AI-innsikt</h2>
-<table>
-  <tr><th style="width:28%">Tema</th><th>Detalj</th></tr>
-  {_insight_rows()}
-</table>
-
-<h2>Anbefalinger (AI)</h2>
-<table>
-  <tr><th style="width:10%">Prioritet</th><th style="width:40%">Tiltak</th><th>Forventet effekt</th></tr>
-  {_rec_rows()}
-</table>
-
-<h2>ML — Budsjettomfordeling</h2>
-<table>
-  <tr><th>Fra kanal</th><th>Til kanal</th><th>Fra ROAS</th><th>Til ROAS</th><th>Begrunnelse</th></tr>
-  {_ml_rec_rows()}
-</table>
-
-<h2>ML — Backtesting (walk-forward validering)</h2>
-<table>
-  <tr><th>Kanal</th><th>XGB MAE</th><th>XGB RMSE</th><th>Bias</th><th>Trendretning</th><th>Forbedring vs lin.</th></tr>
-  {_ml_bt_rows()}
-</table>
-
-<h2>ML — Forretningsmessig konsekvens av prediksjonfeil</h2>
-<table>
-  <tr><th>Kanal</th><th>Beslutningsnøyaktighet</th><th>Ukentlig feilkostnad</th><th>Gj.snitt ROAS</th></tr>
-  {_impact_rows()}
-</table>
-
-<div class="footer">
-  Markedsinnsikt AI · Syntetiske data for demoformål ·
-  Rapport generert {generated}
-</div>
-
-</body>
-</html>"""
-
-    parts = [p for p in [client, campaign, channel] if p and p != "All"]
-    filename = "rapport_" + ("_".join(parts) if parts else "alle") + f"_{_dt.now().strftime('%Y%m%d')}.html"
-    return dcc.send_string(html_report, filename)
+    # ── Output ────────────────────────────────────────────────────────────
+    pdf_bytes = bytes(pdf.output())
+    return dcc.send_bytes(pdf_bytes, filename)
 
 
 if __name__ == "__main__":

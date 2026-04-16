@@ -10,3 +10,4 @@ google-genai>=1.0.0
 mistralai>=1.0.0
 gunicorn>=21.0.0
 shap>=0.44.0
+fpdf2>=2.7.0
