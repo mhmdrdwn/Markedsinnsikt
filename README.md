@@ -1,39 +1,27 @@
 # Markedsinnsikt AI
 
-Markedsinnsikt AI is an ML-powered decision support tool that:
-
-- **Forecasts performance** using XGBoost with 90% prediction intervals
-- **Detects anomalies** using Isolation Forest (multivariate) and z-score (statistical)
-- **Validates models** using rolling/expanding walk-forward backtesting
-- **Compares baselines** — XGBoost vs LinearRegression across every evaluation fold
-- **Analyses errors** — bias, direction accuracy, worst cases, failure mode classification
-- **Quantifies business impact** — translates MAE into estimated weekly cost of error
-- **Generates explainable insights** via LLM (Groq → Gemini → Mistral fallback)
-- **Evaluates model performance over time** — not just a single train/test split
+AI-powered marketing analytics dashboard for multi-client, multi-channel campaign performance. Built with Dash, XGBoost, and a multi-provider LLM layer (Groq → Gemini → Mistral).
 
 ## Features
 
-### Analytics & KPIs
-- **Multi-client filtering** — switch between clients, campaigns, and channels; all charts and insights update dynamically
-- **KPI cards** — total spend, revenue, conversions, ROAS, CTR with week-over-week trend arrows
-- **Performance charts** — ROAS by channel, conversions by campaign, spend distribution, weekly trend — each with a rule-based interpretation line
-- **Anomaly notifications** — bell icon alerts for ROAS drops ≥25% and spend spikes ≥50%
+**Analytics**
+- KPI cards — total spend, revenue, conversions, ROAS, CTR with week-over-week trends
+- Charts — ROAS by channel, conversions by campaign, spend distribution, weekly trend
+- Anomaly notifications — ROAS drops ≥25% and spend spikes ≥50%
+- CSV export and per-tab PDF reports
 
-### AI Insights
-- **AI Insights** — one-click structured analysis: summary, key insights, anomalies, and prioritised recommendations
-- **AI Assistant** — multi-turn chat with full campaign context; clickable example questions to get started
-- **Multi-provider fallback** — tries Groq → Gemini → Mistral automatically; if one provider hits rate limits or fails, the next is used transparently
-- **Goal-aware analysis** — evaluates Brand Awareness on CPM/reach, Lead Gen on CPL, Direct Sales on ROAS, App Installs on CPI
-- **Cross-client benchmarking** — compares selected client against portfolio averages
-- **Audience segment analysis** — ranks segments by ROAS and conversions
+**Machine Learning**
+- XGBoost forecasting — next-week ROAS per channel with 90% prediction intervals
+- Walk-forward backtesting — XGBoost vs LinearRegression with MAE, RMSE, bias, direction accuracy
+- Isolation Forest — multivariate anomaly detection across spend, ROAS, and CTR
+- Z-score anomaly detection — statistical outliers on ROAS history
+- Budget reallocation suggestions — ROI-based channel shift recommendations
 
-### Machine Learning (ml_models.py)
-- **XGBoost forecasting** — predicts next week's spend and ROAS per channel using lag features (lag_1, lag_2, rolling mean, trend index); trained with `XGBRegressor(n_estimators=200, max_depth=3, learning_rate=0.05)`
-- **90% prediction intervals** — computed from training residuals, displayed as shaded confidence bands
-- **Walk-forward backtesting** — compares LinearRegression vs XGBoost using expanding-window evaluation; reports MAE, RMSE, winner, and improvement percentage per channel
-- **Isolation Forest anomaly detection** — multi-dimensional detection across spend + ROAS + CTR per campaign/week using `StandardScaler` + `IsolationForest(contamination=0.10)`
-- **Z-score anomaly detection** — statistical detection on ROAS history per campaign
-- **Budget reallocation suggestions** — rule-based recommendations based on channel ROAS ranking
+**AI Insights**
+- Structured analysis — executive decision, summary, key insights, anomalies, prioritised recommendations
+- Multi-turn chat assistant — full campaign context, clickable example questions
+- Multi-provider fallback — Groq → Gemini → Mistral, automatic on rate limits or failures
+- Goal-aware — evaluates Brand Awareness on CPM, Lead Gen on CPL, Direct Sales on ROAS, App Installs on CPI
 
 ## Live demo
 
@@ -41,49 +29,32 @@ Markedsinnsikt AI is an ML-powered decision support tool that:
 
 ## Running locally
 
-### Prerequisites
+**Prerequisites:** Python 3.11+. On macOS, XGBoost requires OpenMP:
+```bash
+brew install libomp
+```
 
-- Python 3.11+
-- On **macOS**, XGBoost requires OpenMP:
-  ```bash
-  brew install libomp
-  ```
+```bash
+# 1. Clone and set up virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-### Setup
+# 2. Install dependencies
+pip install -r requirements.txt
 
-1. Clone the repo and create a virtual environment:
+# 3. Add API keys
+cp .env.example .env
+# Edit .env:
+#   GROQ_API_KEY=gsk_...
+#   GEMINI_API_KEY=...
+#   GEMINI_MODEL=gemini-2.5-flash
+#   MISTRAL_API_KEY=...
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+# 4. Start the dashboard
+python main.py
+```
 
-2. Install dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Copy the env file and add your API keys:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   ```
-   GROQ_API_KEY=gsk_...
-   GEMINI_API_KEY=...
-   GEMINI_MODEL=gemini-2.5-flash
-   MISTRAL_API_KEY=...
-   ```
-
-4. Start the dashboard:
-
-   ```bash
-   python dashboard.py
-   ```
-
-   Open **http://localhost:8050**
+Open **http://localhost:8050**
 
 ## Running with Docker
 
@@ -95,24 +66,39 @@ docker run -p 8050:8050 --env-file .env markedsinnsikt
 ## Deploying on Render
 
 1. Push the repo to GitHub
-2. Create a new Web Service on [Render](https://render.com), connect the repo
-3. Set **Language** to `Docker`
-4. Add environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `MISTRAL_API_KEY`
-5. Deploy — the app will be available at your Render URL
+2. Create a Web Service on [Render](https://render.com), connect the repo, set runtime to `Docker`
+3. Add environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `MISTRAL_API_KEY`
 
 ## Project structure
 
 ```
 .
-├── dashboard.py      # Dash app — UI layout, callbacks, direct function calls
-├── ai_assistant.py   # Multi-provider AI (Groq → Gemini → Mistral), context builder, insights, chat
-├── ml_models.py      # XGBoost forecasting, backtesting, Isolation Forest, z-score anomaly detection
-├── data.py           # Synthetic dataset generator
+├── main.py               # Entry point — run locally or via gunicorn
+├── data.py               # Synthetic dataset generator
+│
+├── app/
+│   ├── main.py           # Dash app — layout, callbacks, PDF/CSV export
+│   └── components/       # Shared UI components (reserved for future use)
+│
+├── ml/
+│   ├── features.py       # Shared helpers: lag features, z-score
+│   ├── models.py         # XGBoost forecasting, linear regression baseline, budget reallocation
+│   ├── backtesting.py    # Walk-forward validation, business impact calculation
+│   └── anomaly.py        # Z-score and Isolation Forest anomaly detection
+│
+├── ai/
+│   └── insights.py       # Context builder, multi-provider LLM calls, prompts
+│
+├── tests/
+│   ├── test_data.py
+│   ├── test_ml_models.py
+│   └── test_ai_assistant.py
+│
 ├── assets/
-│   └── style.css     # Custom CSS (auto-loaded by Dash)
+│   └── style.css         # Custom CSS (auto-loaded by Dash)
 ├── requirements.txt
 ├── Dockerfile
-└── .env              # API keys (not committed)
+└── .env                  # API keys (not committed)
 ```
 
 ## Data note
