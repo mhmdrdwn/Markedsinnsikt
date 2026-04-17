@@ -903,7 +903,7 @@ def update_kpis(client, campaign, channel):
     bell_style = {**bell_style_base, "display": "block" if anomalies else "none"}
 
     return (
-        health_bar,
+        html.Div([_filter_banner(client, campaign, channel), health_bar]),
         cards,
         f"{data['row_count']} rader i gjeldende visning",
         anomalies,
@@ -1758,6 +1758,34 @@ def _make_backtest_fig(r: dict) -> go.Figure:
     return fig
 
 
+def _filter_banner(client, campaign, channel) -> html.Div:
+    """Blue context banner shown at the top of ML and AI tabs when a filter is active."""
+    parts = [(client, "Kunde"), (campaign, "Kampanje"), (channel, "Kanal")]
+    active = [(val, lbl) for val, lbl in parts if val and val != "All"]
+    if not active:
+        return html.Div()
+    chips = [
+        html.Span([
+            html.Span(lbl + ": ", style={"opacity": "0.65", "fontSize": "0.72rem", "fontWeight": 600}),
+            html.Span(val, style={"fontWeight": 700}),
+        ], style={
+            "background": "rgba(255,255,255,0.12)", "borderRadius": "20px",
+            "padding": "0.25rem 0.75rem", "fontSize": "0.82rem", "color": "white",
+        })
+        for val, lbl in active
+    ]
+    return html.Div(
+        [html.Span("🔍  Analyserer:", style={"color": "rgba(255,255,255,0.6)", "fontSize": "0.78rem", "marginRight": "0.6rem"})] + chips,
+        style={
+            "background": "linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%)",
+            "borderRadius": "10px", "padding": "0.65rem 1rem",
+            "display": "flex", "alignItems": "center", "gap": "0.5rem",
+            "flexWrap": "wrap", "marginBottom": "1rem",
+            "boxShadow": "0 2px 8px rgba(30,64,175,0.25)",
+        }
+    )
+
+
 @app.callback(
     Output("ml-out", "children"),
     Output("ml-last-filters", "data"),
@@ -1767,9 +1795,9 @@ def _make_backtest_fig(r: dict) -> go.Figure:
     Input("dd-channel", "value"),
     Input("main-tabs", "active_tab"),
     State("ml-last-filters", "data"),
+    prevent_initial_call=True,
 )
 def run_ml_analysis(client, campaign, channel, active_tab, last_filters):
-    # Only run when the ML tab is visible — avoids blocking other callbacks
     if active_tab != "tab-ml":
         return dash.no_update, dash.no_update, dash.no_update
     current = {"client": client, "campaign": campaign, "channel": channel}
@@ -1790,7 +1818,11 @@ def run_ml_analysis(client, campaign, channel, active_tab, last_filters):
             "z_anomalies": z_anomalies,
             "if_anomalies": if_anomalies,
         }
-        return render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts), current, cached
+        content = html.Div([
+            _filter_banner(client, campaign, channel),
+            render_ml_results(xgb_results, bt, z_anomalies, if_anomalies, impacts),
+        ])
+        return content, current, cached
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger"), current, dash.no_update
 
@@ -1828,9 +1860,9 @@ def update_filter_dots(client, campaign, channel):
     Input("main-tabs", "active_tab"),
     State("insights-last-filters", "data"),
     State("ml-results-store", "data"),
+    prevent_initial_call=True,
 )
 def update_live_insights(client, campaign, channel, active_tab, last_filters, ml_cache):
-    # Only run when the AI tab is visible — avoids blocking other callbacks
     if active_tab != "tab-innsikt":
         return dash.no_update, dash.no_update, dash.no_update
     current = {"client": client, "campaign": campaign, "channel": channel}
@@ -1854,7 +1886,11 @@ def update_live_insights(client, campaign, channel, active_tab, last_filters, ml
             except Exception:
                 impacts, ml_recs = [], []
 
-        return render_insights(data, ml_recs, impacts), current, data
+        content = html.Div([
+            _filter_banner(client, campaign, channel),
+            render_insights(data, ml_recs, impacts),
+        ])
+        return content, current, data
     except Exception as e:
         return ai_error_alert(e), current, dash.no_update
 
