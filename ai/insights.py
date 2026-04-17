@@ -1,10 +1,18 @@
-"""AI assistant layer — builds context from the dataframe and calls Groq/Gemini/Mistral."""
+"""AI assistant layer — builds context from the dataframe and calls Groq/Gemini/Mistral.
+
+v3.0 additions:
+- generate_insights_with_meta()  — insights + eval score + observability
+- answer_question_with_tools()   — agentic chat with Groq function calling
+- _build_rag_context()           — smart slice selection instead of full dump
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import textwrap
+import time
+from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
@@ -600,6 +608,209 @@ def _mistral_answer(messages: list[dict], context: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ObsRecord:
+    """Token-usage and latency record for a single LLM call."""
+    model: str = ""
+    provider: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: int = 0
+    prompt_version: str = "v3.0"
+    tools_used: list[str] = field(default_factory=list)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+# ---------------------------------------------------------------------------
+# RAG-lite context builder  (selects relevant slices, not full dump)
+# ---------------------------------------------------------------------------
+
+def _build_rag_context(
+    df: pd.DataFrame,
+    question: str | None = None,
+) -> str:
+    """Build a focused context string using smart slice selection.
+
+    Instead of dumping all data, selects:
+    1. Always: aggregate summary + channel breakdown
+    2. If question mentions a channel: that channel's weekly trend
+    3. If question hints at anomalies/drops: anomaly section
+    4. If question asks about budget/reallocation: top/bottom channels
+    """
+    question_lower = (question or "").lower()
+
+    lines: list[str] = []
+
+    # --- Aggregate summary (always included) ---
+    total_spend       = df["spend"].sum()
+    total_revenue     = df["revenue"].sum()
+    total_conversions = df["conversions"].sum()
+    avg_roas = (total_revenue / total_spend) if total_spend > 0 else 0
+
+    lines += [
+        "=== AGGREGATE SUMMARY ===",
+        f"Total Spend       : NOK {total_spend:,.0f}",
+        f"Total Revenue     : NOK {total_revenue:,.0f}",
+        f"Total Conversions : {total_conversions:,.0f}",
+        f"Avg ROAS          : {avg_roas:.2f}x",
+        "",
+    ]
+
+    # --- Channel breakdown (always included) ---
+    lines.append("=== PERFORMANCE BY CHANNEL ===")
+    ch_group = (
+        df.groupby("channel")
+        .agg(spend=("spend", "sum"), revenue=("revenue", "sum"), conversions=("conversions", "sum"))
+        .reset_index()
+    )
+    ch_group["roas"] = (ch_group["revenue"] / ch_group["spend"].replace(0, float("nan"))).round(2)
+    ch_group = ch_group.sort_values("roas", ascending=False)
+    for _, row in ch_group.iterrows():
+        lines.append(
+            f"  {row['channel']}: spend NOK {row['spend']:,.0f} | "
+            f"revenue NOK {row['revenue']:,.0f} | conversions {int(row['conversions'])} | ROAS {row['roas']:.2f}x"
+        )
+    lines.append("")
+
+    # --- Trends (always included — compact) ---
+    lines.append(compute_trends(df))
+    lines.append("")
+
+    # --- Anomalies (conditional: always for full analysis, or if question hints) ---
+    anomaly_keywords = ["avvik", "drop", "fall", "spike", "problem", "feil", "dårlig", "lavt"]
+    if not question or any(kw in question_lower for kw in anomaly_keywords):
+        anomalies = detect_anomalies(df)
+        if anomalies:
+            lines.append("=== DETECTED ANOMALIES ===")
+            for a in anomalies[:4]:
+                lines.append(f"  [{a['severity'].upper()}] [{a['client']}] {a['campaign']}: {a['detail']}")
+            lines.append("")
+
+    # --- Budget/reallocation context (conditional) ---
+    budget_keywords = ["budsjett", "budget", "flytt", "reallok", "omfordel", "investere"]
+    if not question or any(kw in question_lower for kw in budget_keywords):
+        sorted_ch = ch_group.sort_values("roas", ascending=False)
+        if len(sorted_ch) >= 2:
+            lines.append("=== BUDGET SIGNAL (best vs worst ROAS) ===")
+            best = sorted_ch.iloc[0]
+            worst = sorted_ch.iloc[-1]
+            lines.append(
+                f"  Best:  {best['channel']}  ROAS {best['roas']:.2f}x  "
+                f"spend NOK {best['spend']:,.0f}"
+            )
+            lines.append(
+                f"  Worst: {worst['channel']}  ROAS {worst['roas']:.2f}x  "
+                f"spend NOK {worst['spend']:,.0f}"
+            )
+            lines.append("")
+
+    # --- Channel-specific weekly trend (if question names a channel) ---
+    for ch_name in df["channel"].unique():
+        if ch_name.lower() in question_lower:
+            sub = df[df["channel"] == ch_name]
+            weekly = (
+                sub.groupby("week")
+                .agg(spend=("spend", "sum"), revenue=("revenue", "sum"))
+                .sort_index()
+            )
+            weekly["roas"] = weekly["revenue"] / weekly["spend"].replace(0, float("nan"))
+            lines.append(f"=== {ch_name.upper()} WEEKLY TREND ===")
+            for w, row in weekly.iterrows():
+                lines.append(
+                    f"  Uke {int(w)}: spend NOK {row['spend']:,.0f} | "
+                    f"ROAS {row['roas']:.2f}x" if pd.notna(row["roas"]) else
+                    f"  Uke {int(w)}: spend NOK {row['spend']:,.0f} | ROAS N/A"
+                )
+            lines.append("")
+            break  # only include the first matched channel to keep context short
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool-calling agentic loop (Groq)
+# ---------------------------------------------------------------------------
+
+def _groq_answer_with_tools(
+    messages: list[dict],
+    context: str,
+    df: pd.DataFrame,
+    model: str,
+) -> tuple[str, ObsRecord]:
+    """Run an agentic chat loop: LLM can call tools up to 4 times per turn."""
+    from ai.tools import TOOL_DEFINITIONS, ToolExecutor
+
+    client = get_groq_client()
+    executor = ToolExecutor(df)
+
+    from ai.prompts import SYSTEM_PROMPT, CHAT_CONTEXT_PREFIX
+    system = SYSTEM_PROMPT + CHAT_CONTEXT_PREFIX + context
+
+    loop_messages = [{"role": "system", "content": system}, *messages]
+
+    obs = ObsRecord(model=model, provider="Groq")
+    t0 = time.time()
+
+    MAX_TOOL_ROUNDS = 4
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = client.chat.completions.create(
+            model=model,
+            messages=loop_messages,
+            tools=TOOL_DEFINITIONS,
+            tool_choice="auto",
+            temperature=0.3,
+            max_tokens=800,
+        )
+
+        # Accumulate token counts
+        if response.usage:
+            obs.prompt_tokens     += response.usage.prompt_tokens or 0
+            obs.completion_tokens += response.usage.completion_tokens or 0
+
+        msg = response.choices[0].message
+
+        # If no tool calls → we have the final answer
+        if not msg.tool_calls:
+            obs.latency_ms  = int((time.time() - t0) * 1000)
+            obs.tools_used  = executor.tools_used
+            return msg.content.strip(), obs
+
+        # Append assistant message (with tool calls)
+        loop_messages.append(msg)
+
+        # Execute each tool call and append results
+        for tc in msg.tool_calls:
+            args = json.loads(tc.function.arguments or "{}")
+            result = executor.execute(tc.function.name, args)
+            loop_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            })
+
+    # Fallback: one more call without tools to force a text response
+    response = client.chat.completions.create(
+        model=model,
+        messages=loop_messages,
+        temperature=0.3,
+        max_tokens=700,
+    )
+    if response.usage:
+        obs.prompt_tokens     += response.usage.prompt_tokens or 0
+        obs.completion_tokens += response.usage.completion_tokens or 0
+
+    obs.latency_ms = int((time.time() - t0) * 1000)
+    obs.tools_used = executor.tools_used
+    return response.choices[0].message.content.strip(), obs
+
+
+# ---------------------------------------------------------------------------
 # Public API — tries Groq -> Gemini -> Mistral automatically
 # ---------------------------------------------------------------------------
 
@@ -635,3 +846,153 @@ def answer_question(
         except Exception as e:
             last_error = e
     raise last_error
+
+
+# ---------------------------------------------------------------------------
+# Extended public API (v3.0) — with metadata
+# ---------------------------------------------------------------------------
+
+def generate_insights_with_meta(
+    df: pd.DataFrame,
+    client_filter: Optional[str] = None,
+    campaign_filter: Optional[str] = None,
+    channel_filter: Optional[str] = None,
+    model: str = "llama-3.3-70b-versatile",
+) -> tuple[dict, dict, ObsRecord]:
+    """Generate insights and return (insights_dict, eval_result, obs_record).
+
+    Builds context internally using smart RAG-lite selection and runs
+    groundedness eval automatically.
+    """
+    from ai.evals import eval_groundedness
+
+    # Build filtered df
+    filtered = df.copy()
+    if client_filter and client_filter != "All":
+        filtered = filtered[filtered["client"] == client_filter]
+    if campaign_filter and campaign_filter != "All":
+        filtered = filtered[filtered["campaign"] == campaign_filter]
+    if channel_filter and channel_filter != "All":
+        filtered = filtered[filtered["channel"] == channel_filter]
+
+    # Use full build_context for structured analysis (includes goal context, predictions, etc.)
+    context = build_context(df, client_filter, campaign_filter, channel_filter)
+
+    t0 = time.time()
+    obs = ObsRecord(model=model, prompt_version="v3.0")
+
+    # Try providers in order
+    insights: dict = {}
+    for provider_name, fn in [
+        ("Groq",    lambda: _groq_insights_with_obs(context, model, obs)),
+        ("Gemini",  lambda: _gemini_insights_with_obs(context, obs)),
+        ("Mistral", lambda: _mistral_insights_with_obs(context, obs)),
+    ]:
+        try:
+            insights = fn()
+            obs.provider = provider_name
+            break
+        except Exception:
+            continue
+
+    obs.latency_ms = int((time.time() - t0) * 1000)
+
+    # Evaluate groundedness
+    eval_result = eval_groundedness(insights, filtered) if insights else {
+        "score": 0, "label": "Svak", "checks": {}, "channels_found": []
+    }
+
+    return insights, eval_result, obs
+
+
+def answer_question_with_tools(
+    messages: list[dict],
+    df: pd.DataFrame,
+    client_filter: Optional[str] = None,
+    campaign_filter: Optional[str] = None,
+    channel_filter: Optional[str] = None,
+    model: str = "llama-3.3-70b-versatile",
+) -> tuple[str, ObsRecord]:
+    """Answer a chat question using tool calling + RAG-lite context.
+
+    Returns (reply_text, obs_record). The obs_record includes tools_used.
+    Falls back to plain `answer_question` if tool calling fails.
+    """
+    # Build filtered df
+    filtered = df.copy()
+    if client_filter and client_filter != "All":
+        filtered = filtered[filtered["client"] == client_filter]
+    if campaign_filter and campaign_filter != "All":
+        filtered = filtered[filtered["campaign"] == campaign_filter]
+    if channel_filter and channel_filter != "All":
+        filtered = filtered[filtered["channel"] == channel_filter]
+
+    # Build RAG-lite context (question-aware)
+    last_user_msg = next(
+        (m["content"] for m in reversed(messages) if m["role"] == "user"), None
+    )
+    context = _build_rag_context(filtered, question=last_user_msg)
+
+    # Try Groq with tool calling first
+    try:
+        reply, obs = _groq_answer_with_tools(messages, context, filtered, model)
+        obs.provider = "Groq"
+        return reply, obs
+    except Exception:
+        pass
+
+    # Fallback: plain answer_question (no tools)
+    t0 = time.time()
+    obs = ObsRecord(model=model, prompt_version="v3.0")
+    for provider_name, fn in [
+        ("Groq",    lambda: _groq_answer(messages, context, model)),
+        ("Gemini",  lambda: _gemini_answer(messages, context)),
+        ("Mistral", lambda: _mistral_answer(messages, context)),
+    ]:
+        try:
+            reply = fn()
+            obs.provider = provider_name
+            obs.latency_ms = int((time.time() - t0) * 1000)
+            return reply, obs
+        except Exception:
+            continue
+
+    raise RuntimeError("All AI providers failed")
+
+
+# ---------------------------------------------------------------------------
+# Observability-aware provider helpers (internal)
+# ---------------------------------------------------------------------------
+
+def _groq_insights_with_obs(context: str, model: str, obs: ObsRecord) -> dict:
+    client = get_groq_client()
+    from ai.prompts import SYSTEM_PROMPT, INSIGHT_PROMPT
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": INSIGHT_PROMPT.format(context=context)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+        max_tokens=2000,
+    )
+    if response.usage:
+        obs.prompt_tokens     = response.usage.prompt_tokens or 0
+        obs.completion_tokens = response.usage.completion_tokens or 0
+    return _safe_json(response.choices[0].message.content)
+
+
+def _gemini_insights_with_obs(context: str, obs: ObsRecord) -> dict:
+    result = _gemini_insights(context)
+    # Gemini SDK doesn't expose token counts easily in this version
+    obs.prompt_tokens = -1
+    obs.completion_tokens = -1
+    return result
+
+
+def _mistral_insights_with_obs(context: str, obs: ObsRecord) -> dict:
+    result = _mistral_insights(context)
+    obs.prompt_tokens = -1
+    obs.completion_tokens = -1
+    return result

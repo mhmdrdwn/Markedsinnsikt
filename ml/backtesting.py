@@ -11,13 +11,16 @@ from ml.features import _lag_features
 def backtest_models(
     df: pd.DataFrame,
     n_lags: int = 2,
-    window: int | None = None,
+    window: int = 26,
+    max_steps: int = 52,
 ) -> list[dict]:
     """
     Walk-forward validation on weekly ROAS per channel.
 
-    window=None : expanding window — trains on all weeks 1..k (default)
-    window=N    : rolling window  — trains on only the last N weeks before k
+    window    : rolling training window in weeks (default 26 = 6 months).
+                Keeps each XGBoost fit small regardless of history length.
+    max_steps : cap the number of backtest steps to the most recent N weeks
+                (default 52 = 1 year). Prevents O(n²) blowup on long series.
 
     For each step k, trains both LinearRegression and XGBoost, predicts k+1,
     and records actual vs predicted. Also computes error analysis:
@@ -49,8 +52,12 @@ def backtest_models(
         actuals, lr_preds, xgb_preds, pred_weeks = [], [], [], []
         min_train = n_lags + 1
 
-        for i in range(min_train, len(vals)):
-            start = max(0, i - window) if window is not None else 0
+        # Limit steps to the most recent max_steps weeks
+        all_steps = list(range(min_train, len(vals)))
+        steps = all_steps[-max_steps:] if len(all_steps) > max_steps else all_steps
+
+        for i in steps:
+            start = max(0, i - window)
             train = vals[start:i]
             X_tr, y_tr = _lag_features(train, n_lags)
             if len(X_tr) < 2:
@@ -66,8 +73,8 @@ def backtest_models(
             lr_p = float(lr.predict(next_feat_arr)[0])
 
             xgb = XGBRegressor(
-                n_estimators=100, max_depth=3, learning_rate=0.1,
-                verbosity=0, random_state=42,
+                n_estimators=30, max_depth=2, learning_rate=0.15,
+                subsample=0.9, verbosity=0, random_state=42,
             )
             xgb.fit(X_tr, y_tr)
             xgb_p = float(xgb.predict(next_feat_arr)[0])
@@ -152,7 +159,7 @@ def backtest_models(
             "direction_accuracy": round(direction_acc, 1) if direction_acc is not None else None,
             "worst_cases":      worst_cases,
             "failure_mode":     failure_mode,
-            "validation_type":  "rolling" if window else "expanding",
+            "validation_type":  f"rolling-{window}w / last-{max_steps}steps",
             "backtest_data": [
                 {
                     "week":      w,

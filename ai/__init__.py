@@ -10,6 +10,9 @@ from ai.insights import (
     compute_audience_context,
     compute_predictions,
     compute_benchmark_context,
+    generate_insights_with_meta,
+    answer_question_with_tools,
+    ObsRecord,
 )
 
 __all__ = [
@@ -22,4 +25,7 @@ __all__ = [
     "compute_audience_context",
     "compute_predictions",
     "compute_benchmark_context",
+    "generate_insights_with_meta",
+    "answer_question_with_tools",
+    "ObsRecord",
 ]

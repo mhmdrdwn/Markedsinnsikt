@@ -7,7 +7,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from data import generate_dataset
+from data import get_dataset
 from ml import (
     backtest_models,
     detect_anomalies_zscore,
@@ -20,7 +20,7 @@ from ml import (
 
 @pytest.fixture(scope="module")
 def df():
-    return generate_dataset()
+    return get_dataset()
 
 
 def test_backtest_returns_list(df):

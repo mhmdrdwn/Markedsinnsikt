@@ -12,9 +12,10 @@ import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
 
-from data import generate_dataset
+from data import get_dataset
 from ai import (
-    build_context, generate_insights, answer_question, detect_anomalies
+    build_context, generate_insights, answer_question, detect_anomalies,
+    generate_insights_with_meta, answer_question_with_tools,
 )
 from ml import (
     detect_anomalies_zscore,
@@ -64,7 +65,7 @@ CHANNEL_COLORS = {
 # Data layer (direct calls — no HTTP)
 # ---------------------------------------------------------------------------
 
-_df: pd.DataFrame = generate_dataset()  # pre-warm at startup — avoids cold-start race on Render
+_df: pd.DataFrame = get_dataset()  # Robyn MMM dataset — pre-warmed at startup
 
 def get_df() -> pd.DataFrame:
     return _df
@@ -356,17 +357,72 @@ def section_header(icon: str, title: str) -> html.Div:
     return html.Div(html.Span(f"{icon}  {title}"), className="section-label")
 
 
+_TOOL_LABEL_MAP = {
+    "get_channel_performance": "kanal-data",
+    "get_top_channel":         "beste kanal",
+    "compare_channels":        "sammenlign kanaler",
+    "get_weekly_trend":        "ukentlig trend",
+    "get_anomalies":           "avvikssøk",
+}
+
+
 def render_bubble(msg: dict) -> html.Div:
     is_user = msg["role"] == "user"
+
+    # Build meta footer for assistant messages
+    meta_items: list = []
+    if not is_user:
+        tools = msg.get("tools_used") or []
+        latency = msg.get("latency_ms")
+        tokens  = msg.get("tokens")
+        provider = msg.get("provider", "")
+
+        if tools:
+            tool_chips = [
+                html.Span(
+                    _TOOL_LABEL_MAP.get(t, t),
+                    style={
+                        "background": "rgba(59,130,246,0.18)",
+                        "color": "#93c5fd",
+                        "borderRadius": "10px",
+                        "padding": "1px 7px",
+                        "fontSize": "0.62rem",
+                        "fontWeight": "600",
+                        "letterSpacing": "0.02em",
+                    },
+                )
+                for t in tools
+            ]
+            meta_items += [
+                html.Span("verktøy: ", style={"color": "#94a3b8", "fontSize": "0.62rem"}),
+                *tool_chips,
+            ]
+
+        if latency:
+            if meta_items:
+                meta_items.append(html.Span(" · ", style={"color": "#64748b"}))
+            label = f"{provider} · " if provider else ""
+            if tokens and tokens > 0:
+                label += f"{latency} ms · {tokens:,} tok"
+            else:
+                label += f"{latency} ms"
+            meta_items.append(html.Span(label, style={"color": "#64748b", "fontSize": "0.62rem", "fontFamily": "monospace"}))
+
+    bubble_content = [dcc.Markdown(msg["content"], style={"margin": 0})]
+    if meta_items:
+        bubble_content.append(
+            html.Div(meta_items, style={"display": "flex", "gap": "4px", "flexWrap": "wrap", "marginTop": "0.4rem", "alignItems": "center"})
+        )
+
     return html.Div(
         html.Div(
-            dcc.Markdown(msg["content"], style={"margin": 0}),
+            bubble_content,
             style={
                 "background": "#2c3e50" if is_user else "#e9ecef",
                 "color": "white" if is_user else "#212529",
                 "padding": "0.6rem 0.9rem",
                 "borderRadius": "16px 16px 4px 16px" if is_user else "16px 16px 16px 4px",
-                "maxWidth": "80%",
+                "maxWidth": "85%",
                 "fontSize": "0.88rem",
                 "lineHeight": "1.4",
             },
@@ -794,6 +850,8 @@ anomaly_notification = html.Div(
         dcc.Store(id="ml-results-store", data=None),
         # Cache AI results so PDF can read without re-calling the API
         dcc.Store(id="ai-results-store", data=None),
+        # Store AI metadata (eval score, observability) for display
+        dcc.Store(id="ai-meta-store", data=None),
     ]
 )
 
@@ -1061,10 +1119,82 @@ def update_chart_insights(client, campaign, channel):
     return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
 
 
-def render_insights(data: dict, ml_recs: list | None = None, impacts: list | None = None) -> html.Div:
+def _obs_badge(obs: dict | None) -> html.Span:
+    """Small observability pill: model | latency | tokens."""
+    if not obs:
+        return html.Span()
+    provider  = obs.get("provider", "")
+    model     = obs.get("model", "")
+    latency   = obs.get("latency_ms", 0)
+    tokens    = obs.get("total_tokens", obs.get("prompt_tokens", 0) + obs.get("completion_tokens", 0))
+    model_str = f"{provider} / {model}" if provider else model
+    parts = [model_str]
+    if latency:
+        parts.append(f"{latency} ms")
+    if tokens and tokens > 0:
+        parts.append(f"{tokens:,} tok")
+    return html.Span(
+        " · ".join(parts),
+        style={
+            "fontSize": "0.68rem", "color": "rgba(255,255,255,0.55)",
+            "background": "rgba(255,255,255,0.06)", "borderRadius": "20px",
+            "padding": "2px 8px", "fontFamily": "monospace",
+        },
+    )
+
+
+def _eval_badge(eval_result: dict | None) -> html.Span:
+    """Groundedness score pill."""
+    if not eval_result:
+        return html.Span()
+    score = eval_result.get("score", 0)
+    label = eval_result.get("label", "")
+    color = (
+        "#22c55e" if score >= 80
+        else "#f59e0b" if score >= 60
+        else "#f97316" if score >= 40
+        else "#ef4444"
+    )
+    return html.Span(
+        [
+            html.Span("●", style={"color": color, "marginRight": "4px"}),
+            f"Grunnfesting: {label} ({score}/100)",
+        ],
+        title=(
+            "Grunnfestingspoeng — sjekker om AI-innsikten er forankret i faktiske data.\n"
+            + "\n".join(
+                f"  {'✓' if v else '✗'} {k}"
+                for k, v in eval_result.get("checks", {}).items()
+            )
+        ),
+        style={
+            "fontSize": "0.68rem", "color": "rgba(255,255,255,0.7)",
+            "background": "rgba(255,255,255,0.06)", "borderRadius": "20px",
+            "padding": "2px 8px", "cursor": "help",
+        },
+    )
+
+
+def render_insights(
+    data: dict,
+    ml_recs: list | None = None,
+    impacts: list | None = None,
+    eval_result: dict | None = None,
+    obs: dict | None = None,
+) -> html.Div:
     unified = _render_unified_action_plan(data.get("recommendations", []), ml_recs or [], impacts or [])
 
     exec_decision = data.get("executive_decision", "")
+
+    # Meta bar: eval badge + obs badge
+    meta_bar = html.Div(
+        [_eval_badge(eval_result), _obs_badge(obs)],
+        style={
+            "display": "flex", "gap": "0.5rem", "alignItems": "center",
+            "marginBottom": "0.75rem", "flexWrap": "wrap",
+        },
+    ) if (eval_result or obs) else html.Div()
+
     exec_block = html.Div(
         [
             html.Div(
@@ -1094,16 +1224,14 @@ def render_insights(data: dict, ml_recs: list | None = None, impacts: list | Non
     ) if exec_decision else html.Div()
 
     return html.Div([
+        meta_bar,
         exec_block,
-
         dbc.Alert(data.get("summary", ""), color="info", className="mb-3"),
-
         html.H6("Nøkkelinnsikt", className="fw-bold"),
         html.Ul([
             html.Li([html.Strong(i.get("title", "") + ": "), i.get("detail", "")])
             for i in data.get("insights", [])
         ], className="mb-3"),
-
         unified,
     ])
 
@@ -1225,16 +1353,18 @@ def auto_greet(panel_style, history, client, campaign, channel):
     if history:
         return dash.no_update, None
     try:
-        context = build_context(get_df(), client, campaign, channel)
-        greeting = answer_question(
-            [{"role": "user", "content": (
-                "Gi meg en kort velkomstmelding på 2 setninger basert på dataene du ser nå. "
-                "Nevn det viktigste tallet eller trenden, og spør hva jeg ønsker å analysere."
-            )}],
-            context,
-            model=DEFAULT_MODEL,
+        greeting_msg = [{"role": "user", "content": (
+            "Gi meg en kort velkomstmelding på 2 setninger basert på dataene du ser nå. "
+            "Nevn det viktigste tallet eller trenden, og spør hva jeg ønsker å analysere."
+        )}]
+        greeting, obs = answer_question_with_tools(
+            greeting_msg, get_df(), client, campaign, channel, model=DEFAULT_MODEL
         )
-        return [{"role": "assistant", "content": greeting}], None
+        return [{
+            "role": "assistant", "content": greeting,
+            "tools_used": obs.tools_used, "latency_ms": obs.latency_ms,
+            "tokens": obs.total_tokens, "provider": obs.provider,
+        }], None
     except Exception:
         return dash.no_update, None
 
@@ -1259,10 +1389,21 @@ def send_message(_, _submit, message, history, client, campaign, channel):
     history = history or []
     history.append({"role": "user", "content": message.strip()})
 
+    # Pass only role+content to the LLM (strip UI-only fields like tools_used, latency_ms)
+    llm_messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
     try:
-        context = build_context(get_df(), client, campaign, channel)
-        reply = answer_question(history, context, model=DEFAULT_MODEL)
-        history.append({"role": "assistant", "content": reply})
+        reply, obs = answer_question_with_tools(
+            llm_messages, get_df(), client, campaign, channel, model=DEFAULT_MODEL
+        )
+        history.append({
+            "role": "assistant",
+            "content": reply,
+            "tools_used": obs.tools_used,
+            "latency_ms": obs.latency_ms,
+            "tokens": obs.total_tokens,
+            "provider": obs.provider,
+        })
     except Exception as e:
         msg = str(e)
         if "429" in msg or "rate_limit" in msg.lower():
@@ -1854,6 +1995,7 @@ def update_filter_dots(client, campaign, channel):
     Output("live-insights-panel", "children"),
     Output("insights-last-filters", "data"),
     Output("ai-results-store", "data"),
+    Output("ai-meta-store", "data"),
     Input("dd-client", "value"),
     Input("dd-campaign", "value"),
     Input("dd-channel", "value"),
@@ -1864,13 +2006,24 @@ def update_filter_dots(client, campaign, channel):
 )
 def update_live_insights(client, campaign, channel, active_tab, last_filters, ml_cache):
     if active_tab != "tab-innsikt":
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     current = {"client": client, "campaign": campaign, "channel": channel}
     if current == last_filters:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     try:
-        context = build_context(get_df(), client, campaign, channel)
-        data = generate_insights(context, model=DEFAULT_MODEL)
+        # Use v3.0 API — returns insights + eval + observability
+        data, eval_result, obs = generate_insights_with_meta(
+            get_df(), client, campaign, channel, model=DEFAULT_MODEL
+        )
+
+        # Serialize obs (dataclass → dict) for storage
+        obs_dict = {
+            "provider": obs.provider, "model": obs.model,
+            "prompt_tokens": obs.prompt_tokens, "completion_tokens": obs.completion_tokens,
+            "total_tokens": obs.total_tokens, "latency_ms": obs.latency_ms,
+            "prompt_version": obs.prompt_version, "tools_used": obs.tools_used,
+        }
+        meta = {"eval": eval_result, "obs": obs_dict}
 
         # Use cached ML results if available — avoids recomputing backtest
         if ml_cache:
@@ -1888,11 +2041,11 @@ def update_live_insights(client, campaign, channel, active_tab, last_filters, ml
 
         content = html.Div([
             _filter_banner(client, campaign, channel),
-            render_insights(data, ml_recs, impacts),
+            render_insights(data, ml_recs, impacts, eval_result=eval_result, obs=obs_dict),
         ])
-        return content, current, data
+        return content, current, data, meta
     except Exception as e:
-        return ai_error_alert(e), current, dash.no_update
+        return ai_error_alert(e), current, dash.no_update, dash.no_update
 
 
 @app.callback(
