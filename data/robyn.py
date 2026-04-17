@@ -46,11 +46,11 @@ _CHANNEL_ROAS = {
 }
 
 _CAMPAIGNS: dict[str, list[tuple[str, str]]] = {
-    "Haaland": [("Haaland – Brand Q1",    "Brand Awareness"),
-                ("Haaland – Direct Sales", "Direct Sales")],
-    "Nansen":  [("Nansen – Lead Gen",     "Lead Generation"),
-                ("Nansen – App Install",  "App Installs")],
-    "Solberg": [("Solberg – Direct Sales", "Direct Sales")],
+    "Haaland": [("Haaland – Brand Q1",       "Brand Awareness"),
+                ("Haaland – Direct Sales",    "Direct Sales")],
+    "Salah":   [("Salah – Lead Gen",          "Lead Generation"),
+                ("Salah – App Install",        "App Installs")],
+    "ViníJr":  [("ViníJr – Direct Sales",     "Direct Sales")],
 }
 
 _CLIENTS   = list(_CAMPAIGNS.keys())

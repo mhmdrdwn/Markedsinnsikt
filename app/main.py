@@ -790,7 +790,7 @@ main = dbc.Col(
 
         html.Hr(style={"marginTop": "3rem", "borderColor": "#e2e8f0"}),
         html.P(
-            "Dataene er syntetiske og kun for demoformål.",
+            "Datakilde: Meta Robyn MMM-datasett (2015–2019) — reelle ukentlige forbruksmønstre med adstock-effekter.",
             className="text-muted text-center small mb-5",
         ),
     ],
@@ -2243,7 +2243,7 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
             f"{_BASE_CSS}"
             "</head><body>"
             f'<div class="wrap">{body}'
-            f'<div class="footer">Generert: {generated} &nbsp;|&nbsp; {scope_str} &nbsp;|&nbsp; Syntetiske data</div>'
+            f'<div class="footer">Generert: {generated} &nbsp;|&nbsp; {scope_str} &nbsp;|&nbsp; Robyn MMM-data</div>'
             "</div></body></html>"
         )
 

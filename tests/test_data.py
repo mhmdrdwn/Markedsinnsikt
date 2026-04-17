@@ -16,7 +16,7 @@ EXPECTED_COLUMNS = {
     "ctr", "conversions", "goal", "audience", "ad_text",
 }
 EXPECTED_CHANNELS = {"Google Ads", "Meta Ads", "TikTok Ads"}
-EXPECTED_CLIENTS  = {"Haaland", "Nansen", "Solberg"}
+EXPECTED_CLIENTS  = {"Haaland", "Salah", "ViníJr"}
 EXPECTED_GOALS    = {"Brand Awareness", "Lead Generation", "Direct Sales", "App Installs"}
 
 
