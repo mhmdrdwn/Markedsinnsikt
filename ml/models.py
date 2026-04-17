@@ -130,8 +130,8 @@ def predict_xgboost_with_intervals(
         feat_names = [f"lag_{i+1}" for i in range(n_lags)] + ["rolling_mean", "trend"]
 
         # SHAP — TreeExplainer is fast (<50ms) for our model/data size
-        import shap as _shap
-        explainer   = _shap.TreeExplainer(model)
+        from shap import TreeExplainer as _TreeExplainer
+        explainer   = _TreeExplainer(model)
         shap_matrix = explainer.shap_values(X)            # (n_samples, n_features)
         shap_next   = explainer.shap_values(next_feat_arr)[0]  # (n_features,)
 
