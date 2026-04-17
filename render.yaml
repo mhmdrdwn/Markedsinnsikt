@@ -3,6 +3,7 @@ services:
     name: markedsinnsikt-dashboard
     runtime: docker
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /
     envVars:
       - key: GROQ_API_KEY
         sync: false

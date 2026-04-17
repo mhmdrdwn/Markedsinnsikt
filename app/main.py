@@ -2345,6 +2345,21 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
     return dcc.send_bytes(pdf_bytes, filename)
 
 
+# ── Kaleido / Chrome pre-warm ─────────────────────────────────────────────
+# Spin up Chrome in a background thread at import time so the first PDF
+# download is instant instead of waiting ~3-5 s for Chrome to cold-start.
+def _prewarm_kaleido():
+    try:
+        import plotly.io as _pio
+        import plotly.graph_objects as _go
+        _pio.to_image(_go.Figure(), format="png", width=10, height=10)
+    except Exception:
+        pass  # non-fatal — PDF export will just be slower on first request
+
+import threading as _threading
+_threading.Thread(target=_prewarm_kaleido, daemon=True).start()
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=False)
