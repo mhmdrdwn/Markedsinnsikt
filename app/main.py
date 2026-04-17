@@ -1915,7 +1915,7 @@ def download_csv(_, client, campaign, channel):
 )
 def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_cache):
     from datetime import datetime as _dt
-    from fpdf import FPDF
+    import plotly.io as _pio
 
     triggered = ctx.triggered_id
 
@@ -1962,86 +1962,101 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
     else:
         ai_data = {}
 
-    # ── PDF helpers ───────────────────────────────────────────────────────
+    # ── HTML report helpers ───────────────────────────────────────────────
     generated   = _dt.now().strftime("%d.%m.%Y %H:%M")
     scope_parts = [p for p in [client, campaign, channel] if p and p != "All"]
     scope_str   = " | ".join(scope_parts) if scope_parts else "Alle kunder / kampanjer / kanaler"
 
-    C_DARK  = (15,  23,  42)
-    C_BLUE  = (30,  58,  95)
-    C_LIGHT = (241, 245, 249)
-    C_MUTED = (100, 116, 139)
-    C_WHITE = (255, 255, 255)
-    C_RED   = (185,  28,  28)
-    C_AMBER = (146,  64,  14)
-    C_GREEN = (6,    95,  70)
+    def _fig_html(fig) -> str:
+        return _pio.to_html(fig, include_plotlyjs=False, full_html=False,
+                            config={"displayModeBar": False})
 
-    def _safe(text: str) -> str:
-        replacements = {
-            "\u2014": "-", "\u2013": "-",
-            "\u202f": " ", "\u00a0": " ",
-            "\u2019": "'", "\u2018": "'",
-            "\u201c": '"', "\u201d": '"',
-            "\u2022": "-",
-        }
-        t = text or ""
-        for src, dst in replacements.items():
-            t = t.replace(src, dst)
-        return t.encode("latin-1", errors="replace").decode("latin-1")
+    _BASE_CSS = """
+    <style>
+      body { font-family: 'Inter', system-ui, sans-serif; background:#f1f5f9; margin:0; padding:0; color:#0f172a; }
+      .wrap { max-width:960px; margin:0 auto; padding:2rem 1.5rem; }
+      .cover { background:linear-gradient(135deg,#0c1628 0%,#1a3a7a 100%);
+               border-radius:14px; padding:2rem 2.5rem; color:white; margin-bottom:2rem; }
+      .cover h1 { margin:0 0 .25rem; font-size:1.8rem; font-weight:800; }
+      .cover p  { margin:0; color:rgba(255,255,255,.55); font-size:.9rem; }
+      h2 { font-size:1rem; font-weight:700; text-transform:uppercase;
+           letter-spacing:.08em; color:#1e3a8a; border-bottom:2px solid #e2e8f0;
+           padding-bottom:.4rem; margin:1.75rem 0 .9rem; }
+      table { width:100%; border-collapse:collapse; font-size:.85rem; margin-bottom:1.25rem; }
+      th { background:#f1f5f9; text-align:left; padding:.45rem .7rem;
+           font-weight:600; border-bottom:2px solid #e2e8f0; }
+      td { padding:.4rem .7rem; border-bottom:1px solid #e8edf3; }
+      tr:nth-child(even) td { background:#f8fafc; }
+      .kpi-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin-bottom:1.5rem; }
+      .kpi { background:white; border-radius:10px; border-left:4px solid #3b82f6;
+             box-shadow:0 1px 4px rgba(0,0,0,.06); padding:.85rem 1rem; }
+      .kpi-label { font-size:.67rem; font-weight:700; text-transform:uppercase;
+                   letter-spacing:.08em; color:#94a3b8; margin-bottom:.3rem; }
+      .kpi-value { font-size:1.4rem; font-weight:800; color:#0f172a; }
+      .chart-box { background:white; border-radius:12px; border:1px solid #e8edf3;
+                   box-shadow:0 1px 4px rgba(0,0,0,.04); padding:.5rem .5rem 0;
+                   margin-bottom:1.25rem; }
+      .insight { font-size:.8rem; color:#64748b; padding:.35rem .75rem;
+                 border-left:3px solid #3b82f6; background:#f8fafc;
+                 border-radius:0 6px 6px 0; margin:.25rem .25rem 1rem; }
+      .badge { display:inline-block; background:rgba(59,130,246,.15);
+               border:1px solid rgba(59,130,246,.3); color:#1d4ed8;
+               font-size:.68rem; font-weight:700; text-transform:uppercase;
+               letter-spacing:.08em; padding:.2rem .65rem; border-radius:20px;
+               margin-bottom:.65rem; }
+      .exec { background:linear-gradient(135deg,#1e3a5f,#2c3e50); color:white;
+              border-radius:10px; padding:1rem 1.25rem; margin-bottom:1.25rem;
+              border-left:4px solid #3b82f6; }
+      .exec-label { font-size:.65rem; font-weight:700; text-transform:uppercase;
+                    letter-spacing:.1em; color:rgba(255,255,255,.6); margin-bottom:.4rem; }
+      .footer { text-align:center; font-size:.75rem; color:#94a3b8; margin-top:2.5rem;
+                padding-top:1rem; border-top:1px solid #e2e8f0; }
+      @media print { body { background:white; } .wrap { padding:0; } }
+    </style>"""
 
-    def _fmt_nok_pdf(value: float) -> str:
-        return f"NOK {value:,.0f}".replace(",", " ")
+    def _h(tag, text, **kw):
+        attrs = " ".join(f'{k}="{v}"' for k, v in kw.items())
+        return f"<{tag} {attrs}>{text}</{tag}>" if attrs else f"<{tag}>{text}</{tag}>"
 
-    class ReportPDF(FPDF):
-        def __init__(self, subtitle):
-            super().__init__()
-            self._subtitle = subtitle
-        def header(self):
-            self.set_font("Helvetica", "B", 9)
-            self.set_text_color(*C_MUTED)
-            self.cell(0, 6, f"Markedsinnsikt AI - {self._subtitle}", align="L")
-            self.cell(0, 6, f"Side {self.page_no()}", align="R", new_x="LMARGIN", new_y="NEXT")
-            self.set_draw_color(*C_LIGHT)
-            self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
-            self.ln(3)
-        def footer(self):
-            self.set_y(-13)
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(*C_MUTED)
-            self.cell(0, 6, _safe(f"Generert: {generated}  |  {scope_str}  |  Syntetiske data"), align="C")
-        def cover(self, title):
-            self.set_font("Helvetica", "B", 18)
-            self.set_text_color(*C_DARK)
-            self.cell(0, 10, "Markedsinnsikt AI", new_x="LMARGIN", new_y="NEXT")
-            self.set_font("Helvetica", "", 12)
-            self.set_text_color(*C_MUTED)
-            self.cell(0, 7, _safe(title), new_x="LMARGIN", new_y="NEXT")
-            self.set_font("Helvetica", "", 8.5)
-            self.cell(0, 5, _safe(f"Generert: {generated}   |   Utvalg: {scope_str}"), new_x="LMARGIN", new_y="NEXT")
-            self.ln(5)
-        def section_title(self, title: str):
-            self.ln(4)
-            self.set_font("Helvetica", "B", 11)
-            self.set_text_color(*C_BLUE)
-            self.set_fill_color(*C_LIGHT)
-            self.cell(0, 8, _safe(title), fill=True, new_x="LMARGIN", new_y="NEXT")
-            self.ln(2)
-            self.set_text_color(*C_DARK)
-        def table_header(self, cols):
-            self.set_font("Helvetica", "B", 8)
-            self.set_fill_color(*C_LIGHT)
-            self.set_text_color(*C_DARK)
-            for label, w in cols:
-                self.cell(w, 6, _safe(label), border="B", fill=True)
-            self.ln()
-        def table_row(self, cells, shade=False):
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(*C_DARK)
-            if shade:
-                self.set_fill_color(248, 250, 252)
-            for text, w in cells:
-                self.cell(w, 5.5, _safe(str(text)), border="B", fill=shade)
-            self.ln()
+    def _fmt_nok(value: float) -> str:
+        return f"NOK {value:,.0f}".replace(",", "\u202f")
+
+    def _table(headers: list, rows: list) -> str:
+        ths = "".join(f"<th>{h}</th>" for h in headers)
+        trs = "".join(
+            "<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
+            for row in rows
+        )
+        return f"<table><thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>"
+
+    def _cover(subtitle: str) -> str:
+        return (
+            f'<div class="cover">'
+            f'<div class="badge">Markedsinnsikt AI</div>'
+            f'<h1>{subtitle}</h1>'
+            f'<p>{generated} &nbsp;|&nbsp; {scope_str}</p>'
+            f'</div>'
+        )
+
+    def _kpi_grid(items: list) -> str:
+        cards = "".join(
+            f'<div class="kpi"><div class="kpi-label">{lbl}</div>'
+            f'<div class="kpi-value">{val}</div></div>'
+            for lbl, val in items
+        )
+        return f'<div class="kpi-grid">{cards}</div>'
+
+    def _wrap(body: str) -> str:
+        return (
+            "<!DOCTYPE html><html lang='no'><head>"
+            "<meta charset='utf-8'>"
+            "<script src='https://cdn.plot.ly/plotly-2.35.2.min.js'></script>"
+            f"{_BASE_CSS}"
+            "</head><body>"
+            f'<div class="wrap">{body}'
+            f'<div class="footer">Generert: {generated} &nbsp;|&nbsp; {scope_str} &nbsp;|&nbsp; Syntetiske data</div>'
+            "</div></body></html>"
+        )
 
     parts    = [p for p in [client, campaign, channel] if p and p != "All"]
     tag      = "_".join(parts) if parts else "alle"
@@ -2050,314 +2065,162 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
     # ══════════════════════════════════════════════════════════════════════
     # ANALYSE TAB — KPIs + chart insights + portfolio health
     # ══════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════
+    # ANALYSE TAB
+    # ══════════════════════════════════════════════════════════════════════
     if triggered == "btn-download-pdf-analyse":
-        import io as _io
-        import plotly.io as _pio
-
-        pdf = ReportPDF("Oversiktsrapport")
-        pdf.set_auto_page_break(auto=True, margin=18)
-        pdf.set_margins(left=14, top=14, right=14)
-        pdf.add_page()
-        pdf.cover("Oversikt — Analyse")
-        W = pdf.w - pdf.l_margin - pdf.r_margin
-
-        # Portfolio health
-        pdf.section_title("Portefolgehelse")
-        pdf.set_font("Helvetica", "B", 28)
-        pdf.set_text_color(*C_DARK)
-        pdf.cell(0, 14, f"{health['score']}/100", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Helvetica", "", 10)
-        pdf.set_text_color(*C_MUTED)
-        pdf.cell(0, 6, _safe(health["label"]), new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(4)
-
-        # KPIs
-        pdf.section_title("Nokkelmetrikker")
-        pdf.table_header([("Indikator", W*0.5), ("Verdi", W*0.5)])
-        for i, (label, val) in enumerate([
-            ("Totalt forbruk",  _fmt_nok_pdf(kpis["total_spend"])),
-            ("Total inntekt",   _fmt_nok_pdf(kpis["total_revenue"])),
-            ("Konverteringer",  f"{kpis['total_conversions']:,}"),
-            ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
-            ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
-            ("Datarader",       f"{kpis['row_count']:,}"),
-        ]):
-            pdf.table_row([(label, W*0.5), (val, W*0.5)], shade=(i % 2 == 0))
-        pdf.ln(4)
-
-        # Charts as images
-        pdf.section_title("Grafiske analyser")
         fig_roas, fig_conv, fig_spend, fig_weekly = build_analyse_figs(client, campaign, channel)
-        chart_titles = [
-            ("ROAS per kanal", fig_roas),
-            ("Konverteringer per kampanje", fig_conv),
-            ("Forbruk per kanal", fig_spend),
-            ("Ukentlig forbrukstrend", fig_weekly),
-        ]
-        for chart_label, fig in chart_titles:
-            try:
-                png = _pio.to_image(fig, format="png", width=700, height=320, scale=2)
-                pdf.set_font("Helvetica", "B", 9)
-                pdf.set_text_color(*C_DARK)
-                pdf.cell(0, 6, _safe(chart_label), new_x="LMARGIN", new_y="NEXT")
-                pdf.image(_io.BytesIO(png), x=pdf.l_margin, w=W)
-                pdf.ln(3)
-            except Exception:
-                pass
-
-        # Chart insights
         hints = compute_chart_insights(client, campaign, channel)
-        pdf.section_title("Automatiske innsikter fra grafene")
-        for i, (label, txt) in enumerate([
-            ("ROAS per kanal",         hints.get("roas", "")),
-            ("Konverteringer",         hints.get("conv", "")),
-            ("Forbruk per kanal",      hints.get("spend", "")),
-            ("Ukentlig forbrukstrend", hints.get("weekly", "")),
-        ]):
-            if txt:
-                pdf.set_font("Helvetica", "B", 8)
-                pdf.set_text_color(*C_DARK)
-                pdf.cell(W*0.30, 5.5, _safe(label), border="B", fill=(i % 2 == 0))
-                pdf.set_font("Helvetica", "", 8)
-                pdf.cell(W*0.70, 5.5, _safe(txt), border="B", fill=(i % 2 == 0))
-                pdf.ln()
 
-        filename = f"rapport_oversikt_{tag}_{date_tag}.pdf"
+        charts_html = "".join(
+            f'<h2>{title}</h2><div class="chart-box">{_fig_html(fig)}</div>'
+            f'<div class="insight">{hints.get(key, "")}</div>'
+            for title, fig, key in [
+                ("ROAS per kanal",           fig_roas,    "roas"),
+                ("Konverteringer per kampanje", fig_conv,  "conv"),
+                ("Forbruk per kanal",         fig_spend,  "spend"),
+                ("Ukentlig forbrukstrend",    fig_weekly, "weekly"),
+            ]
+        )
+
+        body = (
+            _cover("Oversiktsrapport — Analyse")
+            + _kpi_grid([
+                ("Totalt forbruk",  _fmt_nok(kpis["total_spend"])),
+                ("Total inntekt",   _fmt_nok(kpis["total_revenue"])),
+                ("Konverteringer",  f"{kpis['total_conversions']:,}"),
+                ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
+                ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
+                ("Portefolgehelse", f"{health['score']}/100 — {health['label']}"),
+            ])
+            + charts_html
+        )
+        filename = f"rapport_oversikt_{tag}_{date_tag}.html"
 
     # ══════════════════════════════════════════════════════════════════════
-    # ML TAB — predictions, backtesting, anomalies, business impact
+    # ML TAB
     # ══════════════════════════════════════════════════════════════════════
     elif triggered == "btn-download-pdf-ml":
-        import io as _io
-        import plotly.io as _pio
+        fig_xgb, fig_global, fig_local = build_ml_figs(xgb_results)
 
-        pdf = ReportPDF("ML-analyserapport")
-        pdf.set_auto_page_break(auto=True, margin=18)
-        pdf.set_margins(left=14, top=14, right=14)
-        pdf.add_page()
-        pdf.cover("ML-analyse")
-        W = pdf.w - pdf.l_margin - pdf.r_margin
+        xgb_rows = [
+            [p["channel"], f"{p['predicted_roas']:.2f}x",
+             f"[{p['lower_90']:.2f} – {p['upper_90']:.2f}]x",
+             p.get("next_date", f"Uke {p['next_week']}")]
+            for p in xgb_results
+        ] or [["Ingen prediksjoner.", "", "", ""]]
 
-        # XGBoost predictions
-        pdf.section_title("XGBoost ROAS-prediksjon neste uke")
-        pdf.table_header([("Kanal", W*0.30), ("Prediksjon", W*0.20),
-                          ("90% intervall", W*0.30), ("Dato", W*0.20)])
-        if xgb_results:
-            for i, p in enumerate(xgb_results):
-                pdf.table_row([
-                    (p["channel"],                                          W*0.30),
-                    (f"{p['predicted_roas']:.2f}x",                        W*0.20),
-                    (f"[{p['lower_90']:.2f} - {p['upper_90']:.2f}]x",     W*0.30),
-                    (p.get("next_date", f"Uke {p['next_week']}"),          W*0.20),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ingen prediksjoner.", W)], shade=False)
-        pdf.ln(4)
+        bt_rows = [
+            [r["channel"], f"{r['xgb_mae']:.3f}", f"{r['xgb_rmse']:.3f}",
+             f"{r.get('xgb_bias',0):+.3f}x",
+             f"{r['direction_accuracy']:.0f}%" if r.get("direction_accuracy") is not None else "–",
+             f"{r.get('improvement_pct',0):+.1f}%"]
+            for r in bt
+        ] or [["Ikke nok data.", "", "", "", "", ""]]
 
-        # XGBoost forecast chart + SHAP charts as images
-        if xgb_results:
-            try:
-                _fig_xgb, _fig_global, _fig_local = build_ml_figs(xgb_results)
-                for _chart_label, _fig in [
-                    ("XGBoost ROAS-prediksjon med 90% usikkerhetsintervall", _fig_xgb),
-                    ("SHAP — global feature-viktighet", _fig_global),
-                    ("SHAP — lokal forklaring (kanal 1)", _fig_local),
-                ]:
-                    if _fig is None:
-                        continue
-                    png = _pio.to_image(_fig, format="png", width=700, height=320, scale=2)
-                    pdf.set_font("Helvetica", "B", 9)
-                    pdf.set_text_color(*C_DARK)
-                    pdf.cell(0, 6, _safe(_chart_label), new_x="LMARGIN", new_y="NEXT")
-                    pdf.image(_io.BytesIO(png), x=pdf.l_margin, w=W)
-                    pdf.ln(3)
-            except Exception:
-                pass
+        impact_rows = [
+            [imp["channel"],
+             f"ca. {round(imp['decision_accuracy_proxy']/5)*5:.0f}%",
+             _fmt_nok(round(imp["estimated_weekly_cost_of_error"]/500)*500),
+             f"{imp['avg_actual_roas']:.2f}x"]
+            for imp in impacts
+        ] or [["Ingen data.", "", "", ""]]
 
-        # Backtesting
-        pdf.section_title("Backtesting — walk-forward validering")
-        pdf.table_header([("Kanal", W*0.22), ("XGB MAE", W*0.13), ("XGB RMSE", W*0.14),
-                          ("Bias", W*0.14), ("Trendretning", W*0.17), ("Forbedring", W*0.20)])
-        if bt:
-            for i, r in enumerate(bt):
-                d = r.get("direction_accuracy")
-                pdf.table_row([
-                    (r["channel"],                              W*0.22),
-                    (f"{r['xgb_mae']:.3f}",                    W*0.13),
-                    (f"{r['xgb_rmse']:.3f}",                   W*0.14),
-                    (f"{r.get('xgb_bias',0):+.3f}x",           W*0.14),
-                    (f"{d:.0f}%" if d is not None else "-",    W*0.17),
-                    (f"{r.get('improvement_pct',0):+.1f}%",    W*0.20),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ikke nok data.", W)], shade=False)
-        pdf.ln(4)
-
-        # Business impact
-        pdf.section_title("Forretningsmessig konsekvens av prediksjonfeil")
-        pdf.table_header([("Kanal", W*0.28), ("Beslutningsnoyaktighet", W*0.27),
-                          ("Ukentlig feilkostnad", W*0.25), ("Gj.snitt ROAS", W*0.20)])
-        if impacts:
-            for i, imp in enumerate(impacts):
-                acc  = round(imp["decision_accuracy_proxy"] / 5) * 5
-                cost = round(imp["estimated_weekly_cost_of_error"] / 500) * 500
-                pdf.table_row([
-                    (imp["channel"],           W*0.28),
-                    (f"ca. {acc:.0f}%",        W*0.27),
-                    (_fmt_nok_pdf(cost),        W*0.25),
-                    (f"{imp['avg_actual_roas']:.2f}x", W*0.20),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ingen data.", W)], shade=False)
-        pdf.ln(4)
-
-        # Anomalies
         all_anomalies = (z_anomalies or [])[:5] + (if_anomalies or [])[:5]
-        pdf.section_title("Avviksdeteksjon (Z-score + Isolation Forest)")
-        pdf.table_header([("Alvorlighet", W*0.15), ("Kunde / Kampanje", W*0.40), ("Detalj", W*0.45)])
-        if all_anomalies:
-            for i, a in enumerate(all_anomalies):
-                pdf.table_row([
-                    (a.get("severity","").upper(),                      W*0.15),
-                    (f"{a.get('client','')} / {a.get('campaign','')}",  W*0.40),
-                    (a.get("detail", ""),                               W*0.45),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ingen avvik oppdaget.", W)], shade=False)
+        anom_rows = [
+            [a.get("severity","").upper(),
+             f"{a.get('client','')} / {a.get('campaign','')}",
+             a.get("detail","")]
+            for a in all_anomalies
+        ] or [["Ingen avvik oppdaget.", "", ""]]
 
-        # Budget reallocation
-        pdf.section_title("ML — Budsjettomfordeling")
-        pdf.table_header([("Fra kanal", W*0.28), ("Til kanal", W*0.28),
-                          ("Fra ROAS", W*0.17), ("Til ROAS", W*0.17), ("Begrunnelse", W*0.10)])
-        if ml_recs:
-            for i, r in enumerate(ml_recs):
-                pdf.table_row([
-                    (r["from_channel"],        W*0.28),
-                    (r["to_channel"],          W*0.28),
-                    (f"{r['from_roas']:.2f}x", W*0.17),
-                    (f"{r['to_roas']:.2f}x",   W*0.17),
-                    (r.get("summary",""),      W*0.10),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
+        ml_rec_rows = [
+            [r["from_channel"], r["to_channel"],
+             f"{r['from_roas']:.2f}x", f"{r['to_roas']:.2f}x", r.get("summary","")]
+            for r in (ml_recs or [])
+        ] or [["Ingen anbefalinger.", "", "", "", ""]]
 
-        filename = f"rapport_ml_{tag}_{date_tag}.pdf"
+        charts_html = (
+            f'<div class="chart-box">{_fig_html(fig_xgb)}</div>'
+            + (f'<div class="chart-box">{_fig_html(fig_global)}</div>'
+               f'<div class="chart-box">{_fig_html(fig_local)}</div>'
+               if fig_global else "")
+        )
+
+        body = (
+            _cover("ML-analyserapport")
+            + "<h2>XGBoost ROAS-prediksjon neste uke</h2>"
+            + _table(["Kanal","Prediksjon","90% intervall","Dato"], xgb_rows)
+            + charts_html
+            + "<h2>Backtesting — walk-forward validering</h2>"
+            + _table(["Kanal","XGB MAE","XGB RMSE","Bias","Trendretning","Forbedring"], bt_rows)
+            + "<h2>Forretningsmessig konsekvens</h2>"
+            + _table(["Kanal","Beslutningsnøyaktighet","Ukentlig feilkostnad","Gj.snitt ROAS"], impact_rows)
+            + "<h2>Avviksdeteksjon</h2>"
+            + _table(["Alvorlighet","Kunde / Kampanje","Detalj"], anom_rows)
+            + "<h2>ML — Budsjettomfordeling</h2>"
+            + _table(["Fra kanal","Til kanal","Fra ROAS","Til ROAS","Begrunnelse"], ml_rec_rows)
+        )
+        filename = f"rapport_ml_{tag}_{date_tag}.html"
 
     # ══════════════════════════════════════════════════════════════════════
-    # AI TAB — executive decision, summary, insights, recommendations
+    # AI TAB
     # ══════════════════════════════════════════════════════════════════════
     else:
-        pdf = ReportPDF("AI Innsiktsrapport")
-        pdf.set_auto_page_break(auto=True, margin=18)
-        pdf.set_margins(left=14, top=14, right=14)
-        pdf.add_page()
-        pdf.cover("AI Innsikt")
-        W = pdf.w - pdf.l_margin - pdf.r_margin
-
-        # Executive decision
         exec_decision = ai_data.get("executive_decision", "")
-        if exec_decision:
-            pdf.set_fill_color(*C_BLUE)
-            pdf.set_text_color(*C_WHITE)
-            pdf.set_font("Helvetica", "", 7)
-            pdf.cell(0, 5, "UKENS BESLUTNING", fill=True, new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(0, 6, _safe(exec_decision), fill=True)
-            pdf.set_text_color(*C_DARK)
-            pdf.ln(4)
+        exec_block = (
+            f'<div class="exec"><div class="exec-label">Ukens beslutning</div>'
+            f'<strong>{exec_decision}</strong></div>'
+            if exec_decision else ""
+        )
 
-        # AI summary
-        pdf.set_font("Helvetica", "", 9)
-        pdf.set_fill_color(239, 246, 255)
-        pdf.multi_cell(0, 5.5, _safe(ai_data.get("summary", "")), fill=True)
-        pdf.ln(4)
+        summary_block = (
+            f'<p style="background:#eff6ff;padding:.9rem 1rem;border-radius:8px;'
+            f'font-size:.88rem;line-height:1.6">{ai_data.get("summary","")}</p>'
+        )
 
-        # KPI snapshot
-        pdf.section_title("Nokkelmetrikker")
-        pdf.table_header([("Indikator", W*0.5), ("Verdi", W*0.5)])
-        for i, (label, val) in enumerate([
-            ("Totalt forbruk",  _fmt_nok_pdf(kpis["total_spend"])),
-            ("Total inntekt",   _fmt_nok_pdf(kpis["total_revenue"])),
-            ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
-            ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
-            ("Portefolgehelse", f"{health['score']}/100  {health['label']}"),
-        ]):
-            pdf.table_row([(label, W*0.5), (val, W*0.5)], shade=(i % 2 == 0))
-        pdf.ln(4)
+        insight_rows = [
+            [ins.get("title",""), ins.get("detail","")]
+            for ins in ai_data.get("insights", [])
+        ] or [["Ingen innsikter.", ""]]
 
-        # AI insights
-        pdf.section_title("AI-innsikt")
-        pdf.table_header([("Tema", W*0.30), ("Detalj", W*0.70)])
-        insights = ai_data.get("insights", [])
-        if insights:
-            for i, ins in enumerate(insights):
-                pdf.set_font("Helvetica", "B", 8)
-                pdf.set_text_color(*C_DARK)
-                pdf.cell(W*0.30, 5.5, _safe(ins.get("title", "")), border="B", fill=(i%2==0))
-                pdf.set_font("Helvetica", "", 8)
-                pdf.cell(W*0.70, 5.5, _safe(ins.get("detail", "")), border="B", fill=(i%2==0))
-                pdf.ln()
-        else:
-            pdf.table_row([("Ingen innsikter.", W)], shade=False)
-        pdf.ln(4)
-
-        # AI recommendations
-        pdf.section_title("Anbefalinger (AI)")
-        pdf.table_header([("Prioritet", W*0.12), ("Tiltak", W*0.45), ("Forventet effekt", W*0.43)])
-        pri_map = {"high": ("HOY", C_RED), "medium": ("MIDDELS", C_AMBER), "low": ("LAV", C_GREEN)}
-        recs = sorted(ai_data.get("recommendations", []),
+        pri_label = {"high":"🔴 HØY","medium":"🟡 MIDDELS","low":"🟢 LAV"}
+        recs = sorted(ai_data.get("recommendations",[]),
                       key=lambda x: {"high":0,"medium":1,"low":2}.get(x.get("priority","low"),2))
-        for i, r in enumerate(recs):
-            shade = i % 2 == 0
-            pri_label, pri_color = pri_map.get(r.get("priority","low"), ("-", C_MUTED))
-            pdf.set_font("Helvetica", "B", 7.5)
-            pdf.set_text_color(*pri_color)
-            pdf.cell(W*0.12, 5.5, pri_label, border="B", fill=shade)
-            pdf.set_font("Helvetica", "", 8)
-            pdf.set_text_color(*C_DARK)
-            pdf.cell(W*0.45, 5.5, _safe(r.get("action", "")), border="B", fill=shade)
-            pdf.cell(W*0.43, 5.5, _safe(r.get("expected_impact", "")), border="B", fill=shade)
-            pdf.ln()
-        if not recs:
-            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
-        pdf.ln(4)
+        rec_rows = [
+            [pri_label.get(r.get("priority","low"),"-"), r.get("action",""), r.get("expected_impact","")]
+            for r in recs
+        ] or [["Ingen anbefalinger.", "", ""]]
 
-        # ML budget summary
-        pdf.section_title("ML — Budsjettomfordeling")
-        pdf.table_header([("Fra", W*0.25), ("Til", W*0.25), ("Fra ROAS", W*0.17),
-                          ("Til ROAS", W*0.17), ("Begrunnelse", W*0.16)])
-        if ml_recs:
-            for i, r in enumerate(ml_recs):
-                pdf.table_row([
-                    (r["from_channel"],        W*0.25),
-                    (r["to_channel"],          W*0.25),
-                    (f"{r['from_roas']:.2f}x", W*0.17),
-                    (f"{r['to_roas']:.2f}x",   W*0.17),
-                    (r.get("summary",""),      W*0.16),
-                ], shade=(i % 2 == 0))
-        else:
-            pdf.table_row([("Ingen anbefalinger.", W)], shade=False)
+        ml_rec_rows = [
+            [r["from_channel"], r["to_channel"],
+             f"{r['from_roas']:.2f}x", f"{r['to_roas']:.2f}x"]
+            for r in (ml_recs or [])
+        ] or [["Ingen anbefalinger.", "", "", ""]]
 
-        filename = f"rapport_ai_{tag}_{date_tag}.pdf"
+        body = (
+            _cover("AI Innsiktsrapport")
+            + exec_block
+            + summary_block
+            + _kpi_grid([
+                ("Totalt forbruk",  _fmt_nok(kpis["total_spend"])),
+                ("Total inntekt",   _fmt_nok(kpis["total_revenue"])),
+                ("Gj.snitt ROAS",   f"{kpis['avg_roas']:.2f}x"),
+                ("Gj.snitt CTR",    f"{kpis['avg_ctr']:.2f}%"),
+                ("Portefolgehelse", f"{health['score']}/100 — {health['label']}"),
+                ("Datarader",       f"{kpis['row_count']:,}"),
+            ])
+            + "<h2>AI-innsikt</h2>"
+            + _table(["Tema","Detalj"], insight_rows)
+            + "<h2>Anbefalinger (AI)</h2>"
+            + _table(["Prioritet","Tiltak","Forventet effekt"], rec_rows)
+            + "<h2>ML — Budsjettomfordeling</h2>"
+            + _table(["Fra kanal","Til kanal","Fra ROAS","Til ROAS"], ml_rec_rows)
+        )
+        filename = f"rapport_ai_{tag}_{date_tag}.html"
 
     # ── Output ────────────────────────────────────────────────────────────
-    pdf_bytes = bytes(pdf.output())
-    return dcc.send_bytes(pdf_bytes, filename)
-
-
-# ── Kaleido / Chrome pre-warm ─────────────────────────────────────────────
-# Spin up Chrome in a background thread at import time so the first PDF
-# download is instant instead of waiting ~3-5 s for Chrome to cold-start.
-def _prewarm_kaleido():
-    try:
-        import plotly.io as _pio
-        import plotly.graph_objects as _go
-        _pio.to_image(_go.Figure(), format="png", width=10, height=10)
-    except Exception:
-        pass  # non-fatal — PDF export will just be slower on first request
-
-import threading as _threading
-_threading.Thread(target=_prewarm_kaleido, daemon=True).start()
+    return dcc.send_string(_wrap(body), filename)
 
 
 if __name__ == "__main__":
