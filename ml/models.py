@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 
 from ml.features import _lag_features
 
@@ -31,6 +30,7 @@ def predict_next_week(df: pd.DataFrame) -> list[dict]:
         next_week = float(weeks[-1] + 1)
         X = weeks.reshape(-1, 1)
 
+        from sklearn.linear_model import LinearRegression
         spend_vals = weekly["spend"].values
         m_spend = LinearRegression().fit(X, spend_vals)
         pred_spend = float(m_spend.predict([[next_week]])[0])

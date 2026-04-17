@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 
 from ml.features import _lag_features
 
@@ -28,6 +27,7 @@ def backtest_models(
       - failure mode classification
     """
     from xgboost import XGBRegressor
+    from sklearn.linear_model import LinearRegression
 
     results = []
 

@@ -299,11 +299,8 @@ def compute_chart_insights(client, campaign, channel) -> dict:
 # App
 # ---------------------------------------------------------------------------
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 app = dash.Dash(
     __name__,
-    assets_folder=os.path.join(_ROOT, "assets"),
     external_stylesheets=[
         dbc.themes.FLATLY,
         "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
@@ -329,22 +326,25 @@ CHART_LAYOUT = dict(
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def kpi_card(label: str, value: str, trend: float | None = None, card_class: str = "kpi-card-blue") -> dbc.Col:
+def kpi_card(label: str, value: str, trend: float | None = None, card_class: str = "kpi-card-blue", icon: str = "") -> dbc.Col:
     if trend is not None:
         arrow    = "▲" if trend >= 0 else "▼"
         color    = "text-success" if trend >= 0 else "text-danger"
-        trend_el = html.Small(f"{arrow} {abs(trend):.1f}% u/u", className=f"{color} fw-semibold")
+        trend_el = html.Small(f"{arrow} {abs(trend):.1f}% u/u", className=f"{color} fw-semibold",
+                              style={"fontSize": "0.75rem"})
     else:
         trend_el = html.Span()
 
     return dbc.Col(
         dbc.Card(
             dbc.CardBody([
-                html.P(label, className="text-muted mb-1 small fw-semibold text-uppercase",
-                       style={"letterSpacing": "0.06em", "fontSize": "0.7rem"}),
-                html.H4(value, className="mb-1 fw-bold", style={"fontSize": "1.3rem"}),
+                html.Div([
+                    html.P(label, className="kpi-label mb-0"),
+                    html.Span(icon, className="kpi-icon") if icon else html.Span(),
+                ], className="d-flex justify-content-between align-items-start mb-2"),
+                html.Div(value, className="kpi-value mb-1"),
                 trend_el,
-            ]),
+            ], style={"padding": "1rem 1.1rem"}),
             className="h-100",
         ),
         xs=6, md=True,
@@ -388,47 +388,55 @@ sidebar = dbc.Col(
         # Brand block
         html.Div(
             [
-                html.Div("📊", style={"fontSize": "1.6rem", "lineHeight": "1", "marginBottom": "0.3rem"}),
-                html.Div("Markedsinnsikt AI",
-                         style={"fontWeight": "700", "fontSize": "0.92rem",
-                                "color": "white", "letterSpacing": "-0.01em"}),
-                html.Div("KI-drevet markedsanalyse",
-                         style={"fontSize": "0.7rem", "color": "rgba(255,255,255,0.5)",
-                                "marginTop": "0.15rem"}),
+                html.Div(
+                    [
+                        html.Span("📊", style={"fontSize": "1.4rem"}),
+                        html.Div([
+                            html.Div("Markedsinnsikt AI",
+                                     style={"fontWeight": "700", "fontSize": "0.88rem",
+                                            "color": "white", "letterSpacing": "-0.01em",
+                                            "lineHeight": "1.2"}),
+                            html.Div("KI-drevet markedsanalyse",
+                                     style={"fontSize": "0.67rem", "color": "rgba(255,255,255,0.42)",
+                                            "marginTop": "0.1rem"}),
+                        ]),
+                    ],
+                    style={"display": "flex", "alignItems": "center", "gap": "0.65rem"},
+                ),
             ],
             className="sidebar-brand",
         ),
 
-        # Filters label
+        # Filters
         html.Div(html.Span("Filtre"), className="section-label"),
 
         html.Div([
-            dbc.Label("Kunde", className="fw-semibold text-muted small mb-1"),
-            html.Span(id="dot-client", style={"marginLeft": "0.4rem"}),
+            dbc.Label("Kunde", className="mb-1"),
+            html.Span(id="dot-client", style={"marginLeft": "0.4rem", "fontSize": "0.5rem", "color": "#3b82f6"}),
         ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-client", options=[], value="All", clearable=False, className="mb-3"),
 
         html.Div([
-            dbc.Label("Kampanje", className="fw-semibold text-muted small mb-1"),
-            html.Span(id="dot-campaign", style={"marginLeft": "0.4rem"}),
+            dbc.Label("Kampanje", className="mb-1"),
+            html.Span(id="dot-campaign", style={"marginLeft": "0.4rem", "fontSize": "0.5rem", "color": "#3b82f6"}),
         ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-campaign", options=[], value="All", clearable=False, className="mb-3"),
 
         html.Div([
-            dbc.Label("Kanal", className="fw-semibold text-muted small mb-1"),
-            html.Span(id="dot-channel", style={"marginLeft": "0.4rem"}),
+            dbc.Label("Kanal", className="mb-1"),
+            html.Span(id="dot-channel", style={"marginLeft": "0.4rem", "fontSize": "0.5rem", "color": "#3b82f6"}),
         ], style={"display": "flex", "alignItems": "center"}),
         dcc.Dropdown(id="dd-channel", options=[], value="All", clearable=False, className="mb-3"),
 
         dcc.Interval(id="init-trigger", interval=300, max_intervals=1),
 
-        html.Hr(style={"borderColor": "#e2e8f0", "marginTop": "0.5rem"}),
-        html.Div(id="row-count", className="text-muted small text-center"),
+        html.Hr(),
+        html.Div(id="row-count", className="text-center", style={"fontSize": "0.7rem"}),
 
-        html.Hr(style={"borderColor": "#e2e8f0", "marginTop": "0.75rem"}),
+        html.Hr(),
         html.Div(html.Span("Last ned"), className="section-label"),
         dbc.Button(
-            "⬇ CSV",
+            [html.Span("⬇", style={"marginRight": "0.4rem"}), "CSV-eksport"],
             id="btn-download-csv",
             color="outline-secondary",
             size="sm",
@@ -438,14 +446,13 @@ sidebar = dbc.Col(
         dcc.Download(id="download-pdf"),
     ],
     width=2,
+    className="dark-sidebar",
     style={
         "position": "sticky",
         "top": 0,
         "height": "100vh",
         "overflowY": "auto",
-        "background": "#f8fafc",
         "padding": "1.25rem",
-        "borderRight": "1px solid #e2e8f0",
     },
 )
 
@@ -615,13 +622,14 @@ main = dbc.Col(
         # ── Page header banner ────────────────────────────────
         html.Div(
             [
+                html.Div("📊  Markedsanalyse-plattform", className="page-header-badge"),
                 html.H2("Markedsinnsikt AI"),
                 html.P(
-                    "Et beslutningsstøtteverktøy som omgjør markedsdata til handlingsrettede "
-                    "anbefalinger på tvers av kampanjer, kanaler og kunder."
+                    "Omgjør markedsdata til handlingsrettede anbefalinger "
+                    "på tvers av kampanjer, kanaler og kunder — drevet av KI og ML."
                 ),
             ],
-            className="page-header",
+            className="page-header fade-up",
         ),
 
         dbc.Tabs(
@@ -882,11 +890,11 @@ def update_kpis(client, campaign, channel):
     )
 
     cards = [
-        kpi_card("Totalt forbruk", fmt_nok(data['total_spend']),        trends.get("spend_wow"),       "kpi-card-amber"),
-        kpi_card("Total inntekt",  fmt_nok(data['total_revenue']),      trends.get("revenue_wow"),     "kpi-card-green"),
-        kpi_card("Konverteringer", f"{data['total_conversions']:,}",    trends.get("conversions_wow"), "kpi-card-blue"),
-        kpi_card("Gj.snitt ROAS",  f"{data['avg_roas']:.2f}x",         trends.get("roas_wow"),        "kpi-card-purple"),
-        kpi_card("Gj.snitt CTR",   f"{data['avg_ctr']:.2f}%",          trends.get("ctr_wow"),         "kpi-card-teal"),
+        kpi_card("Totalt forbruk", fmt_nok(data['total_spend']),        trends.get("spend_wow"),       "kpi-card-amber",  "💰"),
+        kpi_card("Total inntekt",  fmt_nok(data['total_revenue']),      trends.get("revenue_wow"),     "kpi-card-green",  "📈"),
+        kpi_card("Konverteringer", f"{data['total_conversions']:,}",    trends.get("conversions_wow"), "kpi-card-blue",   "🎯"),
+        kpi_card("Gj.snitt ROAS",  f"{data['avg_roas']:.2f}x",         trends.get("roas_wow"),        "kpi-card-purple", "⚡"),
+        kpi_card("Gj.snitt CTR",   f"{data['avg_ctr']:.2f}%",          trends.get("ctr_wow"),         "kpi-card-teal",   "👆"),
     ]
 
     bell_style_base = {
@@ -1032,6 +1040,20 @@ def update_charts(client, campaign, channel):
         fig_weekly.update_layout(**CHART_LAYOUT)
 
     return fig_roas, fig_conv, fig_spend, fig_weekly
+
+
+@app.callback(
+    Output("insight-roas", "children"),
+    Output("insight-conv", "children"),
+    Output("insight-spend", "children"),
+    Output("insight-weekly", "children"),
+    Input("dd-client", "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel", "value"),
+)
+def update_chart_insights(client, campaign, channel):
+    hints = compute_chart_insights(client, campaign, channel)
+    return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
 
 
 def render_insights(data: dict, ml_recs: list | None = None, impacts: list | None = None) -> html.Div:
@@ -1755,19 +1777,6 @@ def run_ml_analysis(client, campaign, channel, active_tab, last_filters):
     except Exception as e:
         return dbc.Alert(f"ML-feil: {e}", color="danger"), current, dash.no_update
 
-
-@app.callback(
-    Output("insight-roas", "children"),
-    Output("insight-conv", "children"),
-    Output("insight-spend", "children"),
-    Output("insight-weekly", "children"),
-    Input("dd-client", "value"),
-    Input("dd-campaign", "value"),
-    Input("dd-channel", "value"),
-)
-def update_chart_insights(client, campaign, channel):
-    hints = compute_chart_insights(client, campaign, channel)
-    return hints["roas"], hints["conv"], hints["spend"], hints["weekly"]
 
 
 _DOT_ACTIVE = "●"

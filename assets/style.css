@@ -3,7 +3,7 @@
    =================================================== */
 
 /* --- Font --- */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 *, body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -14,13 +14,104 @@ body {
 }
 
 /* ===================================================
-   Sidebar brand block (dark gradient header)
+   Fade-in animation (applied to main content)
    =================================================== */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fadeUp 0.35s ease both;
+}
+
+/* ===================================================
+   Dark Sidebar
+   =================================================== */
+.dark-sidebar {
+  background: linear-gradient(180deg, #0c1628 0%, #0f2040 60%, #112244 100%) !important;
+  box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+}
+
+/* Sidebar brand block */
 .sidebar-brand {
-  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 12px;
   padding: 1rem 1.1rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Section labels inside dark sidebar */
+.dark-sidebar .section-label {
+  color: rgba(255,255,255,0.35);
+}
+.dark-sidebar .section-label::after {
+  background: linear-gradient(to right, rgba(255,255,255,0.12), transparent);
+}
+
+/* Dropdown labels in dark sidebar */
+.dark-sidebar label {
+  color: rgba(255,255,255,0.65) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Hr in dark sidebar */
+.dark-sidebar hr {
+  border-color: rgba(255,255,255,0.08) !important;
+}
+
+/* Row count text in dark sidebar */
+.dark-sidebar #row-count {
+  color: rgba(255,255,255,0.35) !important;
+  font-size: 0.72rem;
+}
+
+/* Dropdowns on dark sidebar */
+.dark-sidebar .Select-control,
+.dark-sidebar .Select--single .Select-control {
+  background: rgba(255,255,255,0.07) !important;
+  border: 1px solid rgba(255,255,255,0.13) !important;
+  border-radius: 8px !important;
+  color: rgba(255,255,255,0.85) !important;
+}
+.dark-sidebar .Select-value-label,
+.dark-sidebar .Select-placeholder {
+  color: rgba(255,255,255,0.75) !important;
+}
+.dark-sidebar .Select-arrow-zone .Select-arrow {
+  border-top-color: rgba(255,255,255,0.4) !important;
+}
+.dark-sidebar .Select-menu-outer {
+  background: #1e3050 !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4) !important;
+}
+.dark-sidebar .VirtualizedSelectOption {
+  color: rgba(255,255,255,0.8) !important;
+  background: transparent !important;
+}
+.dark-sidebar .VirtualizedSelectFocusedOption {
+  background: rgba(59,130,246,0.25) !important;
+  color: white !important;
+}
+.dark-sidebar .Select-input > input {
+  color: rgba(255,255,255,0.85) !important;
+}
+
+/* Download button in dark sidebar */
+.dark-sidebar .btn-outline-secondary {
+  color: rgba(255,255,255,0.55) !important;
+  border-color: rgba(255,255,255,0.15) !important;
+  background: transparent !important;
+}
+.dark-sidebar .btn-outline-secondary:hover {
+  color: white !important;
+  border-color: rgba(255,255,255,0.35) !important;
+  background: rgba(255,255,255,0.08) !important;
 }
 
 /* ===================================================
@@ -48,40 +139,83 @@ body {
    Page header banner
    =================================================== */
 .page-header {
-  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+  background: linear-gradient(135deg, #0c1628 0%, #1a3a7a 60%, #1e3a8a 100%);
   border-radius: 16px;
-  padding: 1.5rem 1.75rem;
+  padding: 1.75rem 2rem;
   margin-bottom: 1.75rem;
   color: white;
+  position: relative;
+  overflow: hidden;
+}
+/* Decorative circles */
+.page-header::before {
+  content: '';
+  position: absolute;
+  top: -40px;
+  right: -40px;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+  pointer-events: none;
+}
+.page-header::after {
+  content: '';
+  position: absolute;
+  bottom: -60px;
+  right: 80px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: rgba(59,130,246,0.08);
+  pointer-events: none;
 }
 .page-header h2 {
   color: white !important;
   margin: 0;
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
 }
 .page-header p {
-  color: rgba(255, 255, 255, 0.58) !important;
-  margin: 0.3rem 0 0;
-  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.52) !important;
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+  max-width: 520px;
+}
+.page-header-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(59,130,246,0.25);
+  border: 1px solid rgba(59,130,246,0.35);
+  color: #93c5fd;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.25rem 0.65rem;
+  border-radius: 20px;
+  margin-bottom: 0.65rem;
 }
 
 /* ===================================================
-   KPI cards — colored left-border accents
+   KPI cards
    =================================================== */
 .kpi-card .card {
-  border-radius: 12px !important;
+  border-radius: 14px !important;
+  border: 1px solid #e8edf3 !important;
   border-top: none !important;
   border-right: none !important;
   border-bottom: none !important;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.05), 0 2px 10px rgba(0,0,0,0.04) !important;
-  transition: transform 0.14s ease, box-shadow 0.14s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.04) !important;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
   background: #ffffff;
 }
 .kpi-card .card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.09) !important;
+  transform: translateY(-3px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.10) !important;
 }
 .kpi-card-amber .card  { border-left: 4px solid #f59e0b !important; }
 .kpi-card-green .card  { border-left: 4px solid #10b981 !important; }
@@ -89,31 +223,94 @@ body {
 .kpi-card-purple .card { border-left: 4px solid #7c3aed !important; }
 .kpi-card-teal .card   { border-left: 4px solid #06b6d4 !important; }
 
+/* KPI icon badge */
+.kpi-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+/* KPI value number */
+.kpi-value {
+  font-size: 1.45rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+  margin-bottom: 0.2rem !important;
+  line-height: 1.1;
+}
+
+/* KPI label */
+.kpi-label {
+  font-size: 0.67rem !important;
+  letter-spacing: 0.08em;
+  color: #94a3b8 !important;
+  margin-bottom: 0.5rem !important;
+}
+
+/* ===================================================
+   Tabs — modern underline style
+   =================================================== */
+.nav-tabs {
+  border-bottom: 2px solid #e2e8f0 !important;
+  gap: 0.25rem;
+}
+.nav-tabs .nav-link {
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  margin-bottom: -2px !important;
+  border-radius: 0 !important;
+  padding: 0.6rem 1.1rem !important;
+  font-size: 0.85rem !important;
+  font-weight: 500 !important;
+  color: #64748b !important;
+  background: transparent !important;
+  transition: color 0.18s, border-color 0.18s !important;
+}
+.nav-tabs .nav-link:hover {
+  color: #1e293b !important;
+  border-bottom-color: #cbd5e1 !important;
+}
+.nav-tabs .nav-link.active {
+  color: #2563eb !important;
+  border-bottom-color: #2563eb !important;
+  font-weight: 600 !important;
+  background: transparent !important;
+}
+.tab-content {
+  padding-top: 0.5rem;
+}
+
 /* ===================================================
    Chart card wrappers
    =================================================== */
 .chart-wrapper {
   background: white;
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid #e8edf3;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04), 0 2px 8px rgba(0,0,0,0.03);
   padding: 0.5rem 0.5rem 0;
   margin-bottom: 0.5rem;
+  transition: box-shadow 0.2s ease;
+}
+.chart-wrapper:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
 }
 
 /* ===================================================
-   Chart insight text (below each chart)
+   Chart insight text
    =================================================== */
 .chart-insight {
   font-size: 0.78rem;
   color: #64748b;
-  font-style: italic;
-  padding: 0.3rem 0.65rem;
+  padding: 0.35rem 0.75rem;
   border-left: 3px solid #3b82f6;
   background: #f8fafc;
   border-radius: 0 6px 6px 0;
-  margin: 0 0.25rem 1rem;
+  margin: 0 0.25rem 1.1rem;
   min-height: 1.4rem;
+  line-height: 1.5;
 }
 
 /* ===================================================
@@ -123,13 +320,60 @@ body {
   border-radius: 8px !important;
   font-weight: 500 !important;
   letter-spacing: 0.01em;
+  transition: all 0.15s ease !important;
+}
+.btn-primary {
+  box-shadow: 0 2px 8px rgba(37,99,235,0.30) !important;
+}
+.btn-primary:hover {
+  box-shadow: 0 4px 14px rgba(37,99,235,0.40) !important;
+  transform: translateY(-1px);
 }
 
 /* ===================================================
-   Cards & alerts (rounded corners everywhere)
+   Cards & alerts
    =================================================== */
-.card   { border-radius: 10px !important; }
+.card   { border-radius: 12px !important; }
 .alert  { border-radius: 10px !important; }
+
+/* ===================================================
+   Portfolio health bar
+   =================================================== */
+.health-bar-wrapper {
+  background: white;
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid #e8edf3;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+.health-score-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: white;
+}
+.health-bar-track {
+  flex: 1;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.health-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
 
 /* ===================================================
    Notification bell
@@ -146,7 +390,10 @@ body {
    =================================================== */
 #chat-panel {
   border-radius: 16px !important;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.22) !important;
+  box-shadow: 0 16px 56px rgba(0,0,0,0.25) !important;
+}
+#chat-toggle-btn {
+  box-shadow: 0 4px 20px rgba(37,99,235,0.35) !important;
 }
 
 /* ===================================================
@@ -157,36 +404,41 @@ body {
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
+/* Dark sidebar scrollbar */
+.dark-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); }
+.dark-sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+
 /* ===================================================
-   Print / PDF styles  (triggered by window.print())
+   ML / AI output panels
+   =================================================== */
+.ml-section-card {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e8edf3;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+/* ===================================================
+   Print / PDF styles
    =================================================== */
 @media print {
-  /* Hide interactive / navigation elements */
   #chat-panel,
   #chat-toggle-btn,
   #notif-wrapper,
   #notif-modal,
-  .sidebar-brand ~ *,          /* filter dropdowns + download buttons */
+  .sidebar-brand ~ *,
   [id^="btn-download"],
   [id^="notif"],
   [id="init-trigger"] { display: none !important; }
 
-  /* Hide the entire sidebar column */
   .col-2 { display: none !important; }
-
-  /* Make main content full width */
   .col-10 { flex: 0 0 100% !important; max-width: 100% !important; }
-
-  /* Remove sticky positioning so content flows naturally */
   .sticky-top, [style*="position: sticky"] { position: static !important; }
-
-  /* Force white background for clean printing */
   body, .page-header { background: white !important; }
-
-  /* Avoid page breaks inside cards and charts */
   .card, .chart-wrapper, table { break-inside: avoid; }
 
-  /* Show page URL and title in footer */
   @page {
     margin: 1.5cm;
     @bottom-center { content: "Markedsinnsikt AI — " counter(page) " / " counter(pages); }
