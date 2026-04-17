@@ -954,16 +954,8 @@ def _empty_fig(msg: str = "Ingen data for dette utvalget") -> go.Figure:
     return fig
 
 
-@app.callback(
-    Output("chart-roas", "figure"),
-    Output("chart-conv", "figure"),
-    Output("chart-spend-pie", "figure"),
-    Output("chart-weekly", "figure"),
-    Input("dd-client", "value"),
-    Input("dd-campaign", "value"),
-    Input("dd-channel", "value"),
-)
-def update_charts(client, campaign, channel):
+def build_analyse_figs(client, campaign, channel):
+    """Build the 4 Analyse-tab figures. Shared by the live callback and PDF export."""
     roas_data   = get_chart_roas(client, campaign, channel)
     conv_data   = get_chart_conv(client, campaign, channel)
     spend_data  = get_chart_spend(client, campaign, channel)
@@ -1040,6 +1032,19 @@ def update_charts(client, campaign, channel):
         fig_weekly.update_layout(**CHART_LAYOUT)
 
     return fig_roas, fig_conv, fig_spend, fig_weekly
+
+
+@app.callback(
+    Output("chart-roas", "figure"),
+    Output("chart-conv", "figure"),
+    Output("chart-spend-pie", "figure"),
+    Output("chart-weekly", "figure"),
+    Input("dd-client", "value"),
+    Input("dd-campaign", "value"),
+    Input("dd-channel", "value"),
+)
+def update_charts(client, campaign, channel):
+    return build_analyse_figs(client, campaign, channel)
 
 
 @app.callback(
@@ -1299,42 +1304,15 @@ def _sev_color(sev: str) -> str:
     return "danger" if sev == "high" else "warning"
 
 
-def render_ml_results(
-    xgb_results: list,
-    backtest: list,
-    zscore_anomalies: list,
-    if_anomalies: list,
-    impacts: list | None = None,
-) -> html.Div:
+def build_ml_figs(xgb_results: list):
+    """Build XGBoost forecast + SHAP figures. Returns (fig_xgb, fig_global, fig_local).
+    fig_global and fig_local are None when xgb_results is empty."""
+    FEAT_LABELS = {
+        "lag_1": "Forrige uke (lag 1)", "lag_2": "To uker siden (lag 2)",
+        "rolling_mean": "Rullende snitt (3 uker)", "trend": "Tidsindeks",
+    }
 
-    # ── 1. XGBoost forecast cards ─────────────────────────────────────────
-    xgb_cards = [
-        dbc.Col(
-            dbc.Card([
-                dbc.CardHeader(html.Strong(p["channel"])),
-                dbc.CardBody([
-                    html.P([
-                        html.Span("ROAS prediksjon ", className="text-muted small"),
-                        html.Span(
-                            pd.to_datetime(p.get("next_date", "")).strftime("%d %b")
-                            if p.get("next_date") else f"uke {p['next_week']}",
-                            className="fw-bold"
-                        ),
-                        html.Span(f": {p['predicted_roas']:.2f}x",
-                                  className="fw-bold text-primary ms-1"),
-                    ], className="mb-1"),
-                    html.P(
-                        f"90% intervall: [{p['lower_90']:.2f}x – {p['upper_90']:.2f}x]",
-                        className="text-muted small mb-0",
-                    ),
-                ]),
-            ], className="shadow-sm h-100"),
-            md=4, className="mb-3",
-        )
-        for p in xgb_results
-    ]
-
-    # ── 2. XGBoost forecast chart with 90% CI error bars ─────────────────
+    # XGBoost forecast with 90% CI error bars
     fig_xgb = go.Figure()
     for p in xgb_results:
         ch    = p["channel"]
@@ -1372,63 +1350,102 @@ def render_ml_results(
         margin=dict(t=50, b=90, l=8, r=8),
     )
 
-    # ── 3. SHAP explainability ────────────────────────────────────────────
-    FEAT_LABELS = {"lag_1": "Forrige uke (lag 1)", "lag_2": "To uker siden (lag 2)",
-                   "rolling_mean": "Rullende snitt (3 uker)", "trend": "Tidsindeks"}
+    if not xgb_results:
+        return fig_xgb, None, None
+
+    # Global SHAP — mean |SHAP| across all channels
+    rows_global = []
+    for p in xgb_results:
+        for feat, val in p["shap_global"].items():
+            rows_global.append({"feature": FEAT_LABELS.get(feat, feat),
+                                 "channel": p["channel"], "shap": round(val, 4)})
+
+    fig_global = px.bar(
+        rows_global, x="shap", y="feature", color="channel",
+        orientation="h", barmode="group",
+        color_discrete_map=CHANNEL_COLORS,
+        title="SHAP — gjennomsnittlig absoluttverdi per feature",
+        labels={"shap": "Gj.snitt |SHAP|", "feature": ""},
+    )
+    fig_global.update_layout(**CHART_LAYOUT)
+    fig_global.update_layout(
+        legend=dict(orientation="h", y=-0.3, font=dict(size=10)),
+        margin=dict(t=46, b=80, l=8, r=8),
+    )
+
+    # Local SHAP — next-week prediction breakdown for first channel
+    p0 = xgb_results[0]
+    local_items = sorted(p0["shap_local"].items(), key=lambda x: x[1])
+    rows_local = [
+        {
+            "feature": FEAT_LABELS.get(k, k),
+            "shap": round(v, 4),
+            "color": "#10b981" if v >= 0 else "#ef4444",
+        }
+        for k, v in local_items
+    ]
+    fig_local = go.Figure(go.Bar(
+        x=[r["shap"] for r in rows_local],
+        y=[r["feature"] for r in rows_local],
+        orientation="h",
+        marker_color=[r["color"] for r in rows_local],
+        text=[f"{r['shap']:+.3f}" for r in rows_local],
+        textposition="outside",
+    ))
+    base = p0["base_value"]
+    pred = p0["predicted_roas"]
+    fig_local.update_layout(**CHART_LAYOUT)
+    fig_local.update_layout(
+        title=f"SHAP lokal forklaring — {p0['channel']} neste uke "
+              f"(basis {base:.2f}x → prediksjon {pred:.2f}x)",
+        xaxis_title="SHAP-bidrag (x)", yaxis_title="",
+        margin=dict(t=50, b=24, l=8, r=60),
+    )
+    fig_local.add_vline(x=0, line_width=1, line_color="#94a3b8")
+
+    return fig_xgb, fig_global, fig_local
+
+
+def render_ml_results(
+    xgb_results: list,
+    backtest: list,
+    zscore_anomalies: list,
+    if_anomalies: list,
+    impacts: list | None = None,
+) -> html.Div:
+
+    # ── 1. XGBoost forecast cards ─────────────────────────────────────────
+    xgb_cards = [
+        dbc.Col(
+            dbc.Card([
+                dbc.CardHeader(html.Strong(p["channel"])),
+                dbc.CardBody([
+                    html.P([
+                        html.Span("ROAS prediksjon ", className="text-muted small"),
+                        html.Span(
+                            pd.to_datetime(p.get("next_date", "")).strftime("%d %b")
+                            if p.get("next_date") else f"uke {p['next_week']}",
+                            className="fw-bold"
+                        ),
+                        html.Span(f": {p['predicted_roas']:.2f}x",
+                                  className="fw-bold text-primary ms-1"),
+                    ], className="mb-1"),
+                    html.P(
+                        f"90% intervall: [{p['lower_90']:.2f}x – {p['upper_90']:.2f}x]",
+                        className="text-muted small mb-0",
+                    ),
+                ]),
+            ], className="shadow-sm h-100"),
+            md=4, className="mb-3",
+        )
+        for p in xgb_results
+    ]
+
+    # ── 2 & 3. XGBoost forecast + SHAP charts ────────────────────────────
+    fig_xgb, fig_global, fig_local = build_ml_figs(xgb_results)
 
     fi_section: list = []
-    if xgb_results:
-        # Global SHAP — mean |SHAP| across all channels
-        all_channels = [p["channel"] for p in xgb_results]
-        rows_global = []
-        for p in xgb_results:
-            for feat, val in p["shap_global"].items():
-                rows_global.append({"feature": FEAT_LABELS.get(feat, feat),
-                                     "channel": p["channel"], "shap": round(val, 4)})
-
-        fig_global = px.bar(
-            rows_global, x="shap", y="feature", color="channel",
-            orientation="h", barmode="group",
-            color_discrete_map=CHANNEL_COLORS,
-            title="SHAP — gjennomsnittlig absoluttverdi per feature",
-            labels={"shap": "Gj.snitt |SHAP|", "feature": ""},
-        )
-        fig_global.update_layout(**CHART_LAYOUT)
-        fig_global.update_layout(
-            legend=dict(orientation="h", y=-0.3, font=dict(size=10)),
-            margin=dict(t=46, b=80, l=8, r=8),
-        )
-
-        # Local SHAP — next-week prediction breakdown for first channel
-        p0 = xgb_results[0]
-        local_items = sorted(p0["shap_local"].items(), key=lambda x: x[1])
-        rows_local = [
-            {
-                "feature": FEAT_LABELS.get(k, k),
-                "shap": round(v, 4),
-                "color": "#10b981" if v >= 0 else "#ef4444",
-            }
-            for k, v in local_items
-        ]
-        fig_local = go.Figure(go.Bar(
-            x=[r["shap"] for r in rows_local],
-            y=[r["feature"] for r in rows_local],
-            orientation="h",
-            marker_color=[r["color"] for r in rows_local],
-            text=[f"{r['shap']:+.3f}" for r in rows_local],
-            textposition="outside",
-        ))
-        base = p0["base_value"]
-        pred = p0["predicted_roas"]
-        fig_local.update_layout(**CHART_LAYOUT)
-        fig_local.update_layout(
-            title=f"SHAP lokal forklaring — {p0['channel']} neste uke "
-                  f"(basis {base:.2f}x → prediksjon {pred:.2f}x)",
-            xaxis_title="SHAP-bidrag (x)", yaxis_title="",
-            margin=dict(t=50, b=24, l=8, r=60),
-        )
-        fig_local.add_vline(x=0, line_width=1, line_color="#94a3b8")
-
+    if xgb_results and fig_global is not None and fig_local is not None:
         fi_section = [
             html.H6("SHAP-forklarbarhet", className="fw-bold mt-3 mb-1"),
             html.P(
@@ -2034,6 +2051,9 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
     # ANALYSE TAB — KPIs + chart insights + portfolio health
     # ══════════════════════════════════════════════════════════════════════
     if triggered == "btn-download-pdf-analyse":
+        import io as _io
+        import plotly.io as _pio
+
         pdf = ReportPDF("Oversiktsrapport")
         pdf.set_auto_page_break(auto=True, margin=18)
         pdf.set_margins(left=14, top=14, right=14)
@@ -2065,6 +2085,26 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
             pdf.table_row([(label, W*0.5), (val, W*0.5)], shade=(i % 2 == 0))
         pdf.ln(4)
 
+        # Charts as images
+        pdf.section_title("Grafiske analyser")
+        fig_roas, fig_conv, fig_spend, fig_weekly = build_analyse_figs(client, campaign, channel)
+        chart_titles = [
+            ("ROAS per kanal", fig_roas),
+            ("Konverteringer per kampanje", fig_conv),
+            ("Forbruk per kanal", fig_spend),
+            ("Ukentlig forbrukstrend", fig_weekly),
+        ]
+        for chart_label, fig in chart_titles:
+            try:
+                png = _pio.to_image(fig, format="png", width=700, height=320, scale=2)
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_text_color(*C_DARK)
+                pdf.cell(0, 6, _safe(chart_label), new_x="LMARGIN", new_y="NEXT")
+                pdf.image(_io.BytesIO(png), x=pdf.l_margin, w=W)
+                pdf.ln(3)
+            except Exception:
+                pass
+
         # Chart insights
         hints = compute_chart_insights(client, campaign, channel)
         pdf.section_title("Automatiske innsikter fra grafene")
@@ -2088,6 +2128,9 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
     # ML TAB — predictions, backtesting, anomalies, business impact
     # ══════════════════════════════════════════════════════════════════════
     elif triggered == "btn-download-pdf-ml":
+        import io as _io
+        import plotly.io as _pio
+
         pdf = ReportPDF("ML-analyserapport")
         pdf.set_auto_page_break(auto=True, margin=18)
         pdf.set_margins(left=14, top=14, right=14)
@@ -2110,6 +2153,26 @@ def download_pdf_report(_an, _ml, _ai, client, campaign, channel, ml_cache, ai_c
         else:
             pdf.table_row([("Ingen prediksjoner.", W)], shade=False)
         pdf.ln(4)
+
+        # XGBoost forecast chart + SHAP charts as images
+        if xgb_results:
+            try:
+                _fig_xgb, _fig_global, _fig_local = build_ml_figs(xgb_results)
+                for _chart_label, _fig in [
+                    ("XGBoost ROAS-prediksjon med 90% usikkerhetsintervall", _fig_xgb),
+                    ("SHAP — global feature-viktighet", _fig_global),
+                    ("SHAP — lokal forklaring (kanal 1)", _fig_local),
+                ]:
+                    if _fig is None:
+                        continue
+                    png = _pio.to_image(_fig, format="png", width=700, height=320, scale=2)
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(*C_DARK)
+                    pdf.cell(0, 6, _safe(_chart_label), new_x="LMARGIN", new_y="NEXT")
+                    pdf.image(_io.BytesIO(png), x=pdf.l_margin, w=W)
+                    pdf.ln(3)
+            except Exception:
+                pass
 
         # Backtesting
         pdf.section_title("Backtesting — walk-forward validering")
