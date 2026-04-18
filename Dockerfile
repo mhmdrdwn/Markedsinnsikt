@@ -11,9 +11,4 @@ COPY . .
 # Pre-compile .py files so first-request import is faster
 RUN python -m compileall -q .
 
-CMD ["gunicorn", "app.main:server", \
-     "--workers", "1", \
-     "--threads", "4", \
-     "--bind", "0.0.0.0:8050", \
-     "--timeout", "120", \
-     "--preload"]
+CMD ["sh", "-c", "gunicorn app.main:server --workers 1 --threads 4 --bind 0.0.0.0:${PORT:-8050} --timeout 120"]
